@@ -1,0 +1,44 @@
+# dsh-a2a bundle patch — mount this plugin in a DSH profile.
+#
+# Usage: add one row per A2A remote agent (outbound client) and optionally one
+# row for the inbound server. Example rows are disabled below; enable the ones
+# you need and fill in your values.
+#
+# The plugin consumes DSH services (`webServer`, `tools`) through the native
+# Cordis `ctx.inject(...)`/`ctx.effect(...)` pattern and declares
+# `inject: ['webServer', 'tools']`, so it mounts over any composition that
+# provides either service (dsh-base provides `tools`; dsh-web-app additionally
+# provides `webServer`) and idles whichever half is absent. No `insert` here =
+# this file only documents rows; a real deployment adds them to its profile's
+# cordis.patch.yml (or ships them via an `insert:` layer).
+
+# ── Outbound: expose a remote A2A agent's skills as model tools ─────────────
+- id: a2a-remote
+  name: 'dsh-a2a'
+  enabled: false
+  config:
+    mode: client
+    name: remote-agency            # namespace for tool names: a2a__<name>__<skill>
+    agentCardUrl: https://example.com/.well-known/agent-card.json
+    # auth:
+    #   type: bearer
+    #   token: !!js process.env.A2A_REMOTE_TOKEN
+    # timeoutMs: 60000
+    # mapSkills: true
+
+# ── Inbound: serve this DSH as an A2A agent to other agents ─────────────────
+- id: a2a-local
+  name: 'dsh-a2a'
+  enabled: false
+  config:
+    mode: server
+    # baseUrl: http://127.0.0.1:3080   # optional — default: derive from webServer listen address
+    agentName: DSH Agent
+    agentDescription: DeepSeek Harness coding agent exposed over A2A v1.0
+    agentVersion: 0.1.0
+    skills:
+      - id: coding
+        name: Coding
+        description: Execute coding and shell tasks inside the DSH workspace.
+        tags: ['coding', 'shell']
+    # execute: my-handler   # optional: register a custom executor via the plugin API

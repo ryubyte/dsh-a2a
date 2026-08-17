@@ -1,0 +1,17 @@
+# dependencies
+node_modules/
+
+# npm
+npm-debug.log*
+*.tgz
+
+# macOS
+.DS_Store
+
+# editor
+.idea/
+.vscode/
+*.swp
+
+# temp
+*.log
