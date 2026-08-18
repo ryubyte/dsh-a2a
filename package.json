@@ -1,7 +1,7 @@
 {
   "name": "@ryubyte/dsh-a2a",
   "description": "Agent2Agent (A2A) protocol v1.0 plugin for DeepSeek Harness (DSH): outbound client (remote AgentCard skills as ctx.tools), inbound server (A2A JSON-RPC + AgentCard endpoint), and a settings dashboard of live A2A connections",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -40,9 +40,6 @@
     "shots": "node scripts/capture-shots.mjs",
     "prepublishOnly": "pnpm build"
   },
-  "dependencies": {
-    "typescript": "^5.5.0"
-  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
@@ -50,18 +47,19 @@
     "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.4",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "^18.3.5",
     "esbuild": "^0.28.2",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tsdown": "^0.22.14",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
   },
   "dsh": {
     "client": {
