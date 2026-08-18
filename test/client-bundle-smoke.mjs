@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 
 const require = createRequire(import.meta.url);
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const src = readFileSync(join(root, 'lib', 'client.bundle.js'), 'utf8');
+const src = readFileSync(join(root, 'lib', 'client.js'), 'utf8');
 
 const react = require('react');
 
@@ -27,6 +27,8 @@ const check = (name, cond, extra = '') => {
 globalThis.window = {
   __ModuleLoader__: {
     load(entry) {
+      const { name: pkgName } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+      check('bundle id matches package.json', entry.id === pkgName, `id=${entry.id}`);
       const mod = entry.factory((id) => (id === 'react' ? react : require(id)));
       check('bundle exports apply', typeof mod.apply === 'function');
       check('bundle exports inject', Array.isArray(mod.inject) && mod.inject.includes('slots'));

@@ -52,10 +52,16 @@ export interface OutboundAgent {
   toolCount: number;
   /** Connection state. */
   state: 'connected' | 'disconnected' | 'reconnecting';
+  /** False when this agent is configured but disabled in a2a.json (no live connection). */
+  enabled?: boolean;
   /** Last-activity ISO timestamp. */
   lastSeen: string;
   /** Per-process connection id assigned by the outbound registry. */
   connectionId?: string;
+  /** True when this connection came from the profile config (vs runtime-added). */
+  configured?: boolean;
+  /** Skills advertised by the remote AgentCard (for the detail view). */
+  skills?: Array<{ id: string; name: string; description?: string; tags?: string[] }>;
 }
 
 export interface DashboardSnapshot {
@@ -74,12 +80,26 @@ export interface ControlResult {
 export interface DashboardControlHooks {
   /** Reconnect an outbound agent by its connection id. */
   reconnectAgent?: (connectionId: string) => Promise<ControlResult>;
+  /** Disable (disconnect + persist enabled:false) an outbound agent without removing it. */
+  disableAgent?: (connectionId: string) => Promise<ControlResult>;
+  /** Enable a disabled outbound agent (persist enabled:true and reconnect). */
+  enableAgent?: (connectionId: string) => Promise<ControlResult>;
   /** Close an outbound agent by its connection id. */
   closeAgent?: (connectionId: string) => Promise<ControlResult>;
   /** Close (sever) an inbound peer by its id. */
   closePeer?: (peerId: string) => Promise<ControlResult>;
   /** Reconnect is not meaningful for an inbound peer — rejects unless overridden. */
   reconnectPeer?: (peerId: string) => Promise<ControlResult>;
+  /** Runtime-add an outbound agent (visual config). Returns the new connection id. */
+  addAgent?: (name: string, agentCardUrl: string) => Promise<ControlResult>;
+  /** Discover an Agent Card without connecting (for the import preview). */
+  discoverAgent?: (agentCardUrl: string) => Promise<ControlResult>;
+  /** Enable/disable the inbound A2A server (serve routes) at runtime. */
+  setServerEnabled?: (enabled: boolean) => Promise<ControlResult>;
+  /** Read current inbound server status (for the serve panel). */
+  serverStatus?: () => ControlResult;
+  /** Runtime-remove an outbound agent by its connection id. */
+  removeAgent?: (connectionId: string) => Promise<ControlResult>;
 }
 
 /** Registry of live A2A connections, both directions. */
@@ -90,7 +110,7 @@ export class DashboardRegistry {
   private seq = 0;
 
   setHooks(hooks: DashboardControlHooks): void {
-    this.hooks = hooks;
+    this.hooks = { ...this.hooks, ...hooks };
   }
 
   // ── inbound ───────────────────────────────────────────────────────────────
@@ -102,10 +122,17 @@ export class DashboardRegistry {
     const remote = req.source;
     const label = peerLabel(ua, remote);
 
-    // Reuse an existing peer when the same socket address keeps talking.
+    // Reuse an existing peer when the same client identity keeps talking.
+    // `source` is a socket address (`ip:port`); the port changes on every new
+    // HTTP connection, so it cannot be the dedup key — otherwise every request
+    // from the same agent would spawn a new row. Dedup on label + host IP and
+    // refresh the displayed socket address to the latest one.
+    const host = remote?.replace(/:\d+$/, '');
+    const key = `${label}|${host ?? ''}`;
     let peer: InboundPeer | undefined;
     for (const p of this.peers.values()) {
-      if (remote && p.source === remote) {
+      const pHost = p.source?.replace(/:\d+$/, '') ?? '';
+      if (`${p.label}|${pHost}` === key) {
         peer = p;
         break;
       }
@@ -115,6 +142,7 @@ export class DashboardRegistry {
       peer = { id, label, source: remote, firstSeen: now, lastSeen: now, taskCount: 0, activeTaskIds: [], streaming: false };
       this.peers.set(id, peer);
     }
+    peer.source = remote ?? peer.source;
     peer.lastSeen = now;
     if (taskIds.length) {
       peer.taskCount += taskIds.length;
@@ -169,6 +197,7 @@ export class DashboardRegistry {
         skillCount: agent.skillCount > 0 ? agent.skillCount : existing.skillCount,
         toolCount: agent.toolCount > 0 ? agent.toolCount : existing.toolCount,
         agentName: agent.agentName ?? existing.agentName,
+        skills: agent.skills ? agent.skills : existing.skills,
         state: agent.state ?? existing.state,
         id,
         lastSeen: now,
@@ -215,7 +244,7 @@ export class DashboardRegistry {
     };
   }
 
-  async control(action: string, target: string): Promise<ControlResult> {
+  async control(action: string, target: string, payload?: Record<string, unknown>): Promise<ControlResult> {
     switch (action) {
       case 'reconnect-agent':
         return this.hooks.reconnectAgent
@@ -225,12 +254,51 @@ export class DashboardRegistry {
         return this.hooks.closeAgent
           ? this.hooks.closeAgent(target)
           : { ok: false, message: 'close-agent is not wired' };
+      case 'disable-agent':
+        return this.hooks.disableAgent
+          ? this.hooks.disableAgent(target)
+          : { ok: false, message: 'disable-agent is not wired (client mode not mounted)' };
+      case 'enable-agent':
+        return this.hooks.enableAgent
+          ? this.hooks.enableAgent(target)
+          : { ok: false, message: 'enable-agent is not wired (client mode not mounted)' };
       case 'reconnect-peer':
         return this.hooks.reconnectPeer
           ? this.hooks.reconnectPeer(target)
           : { ok: false, message: 'reconnect-peer is not supported' };
       case 'close-peer':
         return Promise.resolve(this.closePeerLocal(target));
+      case 'discover-agent': {
+        const url = (payload?.agentCardUrl as string) ?? target;
+        if (!url) return { ok: false, message: 'discover-agent requires agentCardUrl' };
+        return this.hooks.discoverAgent
+          ? this.hooks.discoverAgent(url)
+          : { ok: false, message: 'discover-agent is not wired' };
+      }
+      case 'add-agent': {
+        const name = (payload?.name as string) ?? target;
+        const url = payload?.agentCardUrl as string | undefined;
+        if (!url) return { ok: false, message: 'add-agent requires agentCardUrl' };
+        return this.hooks.addAgent
+          ? this.hooks.addAgent(name, url)
+          : { ok: false, message: 'add-agent is not wired (client mode not mounted)' };
+      }
+      case 'remove-agent':
+        return this.hooks.removeAgent
+          ? this.hooks.removeAgent(target)
+          : { ok: false, message: 'remove-agent is not wired (client mode not mounted)' };
+      case 'server-enable':
+        return this.hooks.setServerEnabled
+          ? this.hooks.setServerEnabled(true)
+          : { ok: false, message: 'server control is not wired (server mode not mounted)' };
+      case 'server-disable':
+        return this.hooks.setServerEnabled
+          ? this.hooks.setServerEnabled(false)
+          : { ok: false, message: 'server control is not wired (server mode not mounted)' };
+      case 'server-status':
+        return this.hooks.serverStatus
+          ? Promise.resolve(this.hooks.serverStatus())
+          : { ok: false, message: 'server-status is not wired (server mode not mounted)' };
       default:
         return { ok: false, message: `unknown action ${action}` };
     }

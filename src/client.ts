@@ -126,11 +126,12 @@ export class A2AClient {
     let t = task;
     for (;;) {
       if (isTerminal(t.status.state as TaskState)) return t;
+      // INPUT_REQUIRED / AUTH_REQUIRED are NOT hard errors: the remote agent
+      // is asking for clarification (or credentials). Return the task so the
+      // caller can surface `status.message` to the model and let it respond,
+      // instead of throwing and stalling the tool call.
       if (t.status.state === TaskState.INPUT_REQUIRED || t.status.state === TaskState.AUTH_REQUIRED) {
-        throw new A2AError(
-          -32001,
-          `Task ${t.id} is interrupted (${t.status.state}): ${t.status.message?.parts?.[0] && 'text' in t.status.message.parts[0] ? t.status.message.parts[0].text : 'agent awaits input'}`,
-        );
+        return t;
       }
       if (options.signal?.aborted) throw new A2AError(408, 'Task wait aborted');
       await new Promise((r) => setTimeout(r, options.intervalMs ?? 500));

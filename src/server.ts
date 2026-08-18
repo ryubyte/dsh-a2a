@@ -17,7 +17,6 @@ import type {
   AgentSkill,
   JsonRpcError,
   JsonRpcRequest,
-  JsonRpcResponse,
   Message,
   Part,
   StreamResponse,
@@ -55,6 +54,8 @@ export interface ServerOptions {
    * dashboard track "who is talking to us".
    */
   onInbound?: (facts: InboundFacts) => void;
+  /** Called when a task reaches a terminal state (completed/failed/canceled). */
+  onTaskSettled?: (taskId: string) => void;
 }
 
 /** Observational facts about one inbound JSON-RPC request. */
@@ -178,7 +179,9 @@ export class A2AServer {
       protocolBinding: 'JSONRPC',
       protocolVersion: '1.0',
     };
-    const skills: AgentSkill[] = this.options.skills ?? defaultSkills;
+    // No implicit skills: only what the deployer configured. Publishing
+    // nothing is safer than inventing a default capability.
+    const skills: AgentSkill[] = this.options.skills ?? [];
     return {
       name: this.options.agentName,
       description: this.options.agentDescription,
@@ -226,7 +229,7 @@ export class A2AServer {
           method: rpc.method,
           headers: req.headers as Record<string, string> | undefined,
           source: sourceOf(req),
-          taskIds: [],
+          taskIds: extractTaskIds(result),
           streaming: false,
         });
         return {
@@ -288,7 +291,7 @@ export class A2AServer {
         // If this was a fresh SendStreamingMessage, kick off execution now.
         if (method === A2A_METHODS.sendStreamingMessage) {
           const msg = (rpc.params as { message?: Message }).message!;
-          this.runTask(task.id, task.contextId!, msg, sub);
+          this.runTask(task.id, task.contextId!, msg);
         }
         // Keep the stream open until the task reaches a terminal state.
         await this.waitTerminal(task.id);
@@ -320,7 +323,7 @@ export class A2AServer {
   }
 
   /** Execute a task in the background, streaming status/artifact updates. */
-  private async runTask(taskId: string, contextId: string, msg: Message, emit?: (ev: StreamResponse) => void) {
+  private async runTask(taskId: string, contextId: string, msg: Message) {
     this.store.setStatus(taskId, TaskState.WORKING);
     this.emit({ statusUpdate: { taskId, contextId, status: this.store.get(taskId)!.status } });
     const signal = new AbortController().signal;
@@ -328,6 +331,7 @@ export class A2AServer {
       const reply = await this.execute({ message: msg, taskId, contextId, signal });
       this.store.addArtifact(taskId, { artifactId: 'result', parts: reply.parts, lastChunk: true });
       this.store.setStatus(taskId, TaskState.COMPLETED, reply);
+      this.options.onTaskSettled?.(taskId);
       const task = this.store.get(taskId)!;
       this.emit({ task });
       this.emit({ artifactUpdate: { taskId, contextId, artifact: task.artifacts![task.artifacts!.length - 1], lastChunk: true } });
@@ -338,6 +342,7 @@ export class A2AServer {
         parts: [{ text: `Task failed: ${(err as Error).message ?? String(err)}` }],
       };
       this.store.setStatus(taskId, TaskState.FAILED, message);
+      this.options.onTaskSettled?.(taskId);
       this.emit({ statusUpdate: { taskId, contextId, status: this.store.get(taskId)!.status } });
     }
   }
@@ -381,6 +386,7 @@ export class A2AServer {
           throw { code: A2A_ERROR_CODES.TASK_CANCEL_NOT_ALLOWED, message: `Task ${id} already in terminal state ${task.status.state}` };
         }
         this.store.setStatus(id, TaskState.CANCELED);
+        this.options.onTaskSettled?.(id);
         return this.store.get(id);
       }
       case A2A_METHODS.getExtendedAgentCard:
@@ -394,6 +400,17 @@ export class A2AServer {
     const err: JsonRpcError = { jsonrpc: '2.0', id, error: { code, message, ...(data !== undefined ? { data } : {}) } };
     return { status: 200, contentType: 'application/json', body: JSON.stringify(err) };
   }
+}
+
+/** Pull task ids out of a dispatch result for inbound peer tracking. */
+function extractTaskIds(result: unknown): string[] {
+  if (!result || typeof result !== 'object') return [];
+  const r = result as { task?: { id?: string }; tasks?: Array<{ id?: string }> };
+  if (typeof r.task?.id === 'string') return [r.task.id];
+  if (Array.isArray(r.tasks)) {
+    return r.tasks.map((t) => t.id).filter((id): id is string => typeof id === 'string');
+  }
+  return [];
 }
 
 export const defaultSkills: ServerSkill[] = [
@@ -422,7 +439,7 @@ export const defaultExecutor: TaskExecutor = async ({ message, signal }) => {
   }
   try {
     const { execFile } = await import('node:child_process');
-    const out = await new Promise<string>((resolve, reject) => {
+    const out = await new Promise<string>((resolve, _reject) => {
       const child = execFile(
         '/bin/sh',
         ['-c', text],

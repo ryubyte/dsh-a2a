@@ -164,6 +164,16 @@ function makeTool(name: string, client: A2AClient, skill: Pick<AgentSkill, 'id' 
             `Remote agent task failed: ${text || (failureMsg && 'text' in failureMsg ? failureMsg.text : 'no detail')}`,
           );
         }
+        // INPUT_REQUIRED / AUTH_REQUIRED: surface the remote's clarification
+        // request as a *usable* tool output, so the model can answer and call
+        // the tool again — not as a hard error that stalls the conversation.
+        if (task.status.state === 'TASK_STATE_INPUT_REQUIRED' || task.status.state === 'TASK_STATE_AUTH_REQUIRED') {
+          const ask =
+            (failureMsg && 'text' in failureMsg ? failureMsg.text : '') ||
+            text ||
+            'agent awaits input';
+          return `[remote agent ${task.status.state}] ${ask}`;
+        }
         return text || '(remote agent returned no output)';
       } catch (err) {
         if (err instanceof A2AError && err.code === -32001 && err.message.includes('interrupted')) {

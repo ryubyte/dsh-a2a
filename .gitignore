@@ -15,3 +15,12 @@ npm-debug.log*
 
 # temp
 *.log
+
+# runtime per-profile A2A config (also written to cwd when a profile starts
+# outside its own directory — never commit it)
+a2a.json
+# internal agent debug docs (never published)
+.agent/
+
+# screenshot capture temp metadata
+*.rect.json
