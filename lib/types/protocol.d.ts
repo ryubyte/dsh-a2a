@@ -327,3 +327,4 @@ export declare const A2A_ERROR_CODES: {
     readonly UNSUPPORTED_OPERATION: -32010;
     readonly VERSION_NOT_SUPPORTED: -32011;
 };
+//# sourceMappingURL=protocol.d.ts.map

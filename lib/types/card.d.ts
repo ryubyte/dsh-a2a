@@ -37,3 +37,4 @@ export declare function pickInterface(card: AgentCard, preferred?: string): {
     iface: AgentInterface;
     url: string;
 };
+//# sourceMappingURL=card.d.ts.map

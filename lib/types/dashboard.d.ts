@@ -49,10 +49,21 @@ export interface OutboundAgent {
     toolCount: number;
     /** Connection state. */
     state: 'connected' | 'disconnected' | 'reconnecting';
+    /** False when this agent is configured but disabled in a2a.json (no live connection). */
+    enabled?: boolean;
     /** Last-activity ISO timestamp. */
     lastSeen: string;
     /** Per-process connection id assigned by the outbound registry. */
     connectionId?: string;
+    /** True when this connection came from the profile config (vs runtime-added). */
+    configured?: boolean;
+    /** Skills advertised by the remote AgentCard (for the detail view). */
+    skills?: Array<{
+        id: string;
+        name: string;
+        description?: string;
+        tags?: string[];
+    }>;
 }
 export interface DashboardSnapshot {
     inbound: InboundPeer[];
@@ -68,12 +79,26 @@ export interface ControlResult {
 export interface DashboardControlHooks {
     /** Reconnect an outbound agent by its connection id. */
     reconnectAgent?: (connectionId: string) => Promise<ControlResult>;
+    /** Disable (disconnect + persist enabled:false) an outbound agent without removing it. */
+    disableAgent?: (connectionId: string) => Promise<ControlResult>;
+    /** Enable a disabled outbound agent (persist enabled:true and reconnect). */
+    enableAgent?: (connectionId: string) => Promise<ControlResult>;
     /** Close an outbound agent by its connection id. */
     closeAgent?: (connectionId: string) => Promise<ControlResult>;
     /** Close (sever) an inbound peer by its id. */
     closePeer?: (peerId: string) => Promise<ControlResult>;
     /** Reconnect is not meaningful for an inbound peer — rejects unless overridden. */
     reconnectPeer?: (peerId: string) => Promise<ControlResult>;
+    /** Runtime-add an outbound agent (visual config). Returns the new connection id. */
+    addAgent?: (name: string, agentCardUrl: string) => Promise<ControlResult>;
+    /** Discover an Agent Card without connecting (for the import preview). */
+    discoverAgent?: (agentCardUrl: string) => Promise<ControlResult>;
+    /** Enable/disable the inbound A2A server (serve routes) at runtime. */
+    setServerEnabled?: (enabled: boolean) => Promise<ControlResult>;
+    /** Read current inbound server status (for the serve panel). */
+    serverStatus?: () => ControlResult;
+    /** Runtime-remove an outbound agent by its connection id. */
+    removeAgent?: (connectionId: string) => Promise<ControlResult>;
 }
 /** Registry of live A2A connections, both directions. */
 export declare class DashboardRegistry {
@@ -102,7 +127,7 @@ export declare class DashboardRegistry {
     /** Touch one agent's last activity. */
     touchAgent(connectionId: string): void;
     snapshot(): DashboardSnapshot;
-    control(action: string, target: string): Promise<ControlResult>;
+    control(action: string, target: string, payload?: Record<string, unknown>): Promise<ControlResult>;
     private closePeerLocal;
 }
 /** A client owned by the plugin entry, tracked for the dashboard. */
@@ -116,3 +141,4 @@ export interface TrackedClient {
 export declare function getSharedRegistry(): DashboardRegistry;
 /** Test hook: reset the shared registry (and any hooks). */
 export declare function resetSharedRegistry(): void;
+//# sourceMappingURL=dashboard.d.ts.map

@@ -21,3 +21,4 @@ export declare class A2AError extends Error {
     };
     static fromJsonRpc(err: A2ARemoteErrorInfo): A2AError;
 }
+//# sourceMappingURL=errors.d.ts.map

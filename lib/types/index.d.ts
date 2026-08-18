@@ -30,6 +30,8 @@ export interface A2APluginConfig {
     bearerToken?: string;
     timeoutMs?: number;
     mapSkills?: boolean;
+    /** Explicitly enable the inbound A2A server (default off). */
+    serverEnabled?: boolean;
     baseUrl?: string;
     agentName?: string;
     agentDescription?: string;
@@ -84,3 +86,4 @@ export declare const name = "a2a";
  */
 export declare const inject: readonly ["webServer", "tools"];
 export declare function apply(ctx: Context, config?: A2APluginConfig): void;
+//# sourceMappingURL=index.d.ts.map

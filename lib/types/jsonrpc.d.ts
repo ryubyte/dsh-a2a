@@ -37,3 +37,4 @@ export declare class JsonRpcClient {
      */
     stream<T = StreamResponse>(method: string, params: unknown, options?: JsonRpcCallOptions): AsyncGenerator<T>;
 }
+//# sourceMappingURL=jsonrpc.d.ts.map

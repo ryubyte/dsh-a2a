@@ -49,3 +49,4 @@ export declare class A2AClient {
      */
     sendAndWait(message: Message, configuration?: SendMessageConfiguration, options?: JsonRpcCallOptions & WaitForTaskOptions): Promise<Task>;
 }
+//# sourceMappingURL=client.d.ts.map

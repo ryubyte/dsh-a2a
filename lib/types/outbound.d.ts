@@ -42,3 +42,4 @@ export interface RegisteredTool {
  * Register all skills of a remote agent on `ctx.tools` and return disposers.
  */
 export declare function registerAgentTools(tools: ToolLike, options: OutboundOptions): Promise<RegisteredTool[]>;
+//# sourceMappingURL=outbound.d.ts.map

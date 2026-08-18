@@ -1,0 +1,3 @@
+# pnpm workspace config (mirrors dsh-skills-mcp-manager)
+allowBuilds:
+  esbuild: true

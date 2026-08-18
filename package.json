@@ -1,41 +1,57 @@
 {
-  "name": "dsh-a2a",
+  "name": "@ryubyte/dsh-a2a",
   "description": "Agent2Agent (A2A) protocol v1.0 plugin for DeepSeek Harness (DSH): outbound client (remote AgentCard skills as ctx.tools), inbound server (A2A JSON-RPC + AgentCard endpoint), and a settings dashboard of live A2A connections",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
-  "types": "lib/index.d.ts",
+  "types": "lib/types/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/index.d.ts",
+      "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
     "./client": {
-      "types": "./lib/client/index.d.ts",
-      "default": "./lib/client.bundle.js"
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
     },
     "./types": {
-      "types": "./lib/protocol.d.ts",
-      "default": "./lib/protocol.js"
+      "types": "./lib/types/protocol.d.ts",
+      "default": "./lib/index.js"
     },
+    "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "files": [
-    "lib",
-    "cordis.patch.yml"
+    "lib/**/*.js",
+    "lib/**/*.js.map",
+    "lib/**/*.d.ts",
+    "lib/**/*.d.ts.map",
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md"
   ],
   "license": "MIT",
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
+    "build": "tsc -p tsconfig.build.json && tsdown && node scripts/build-client.mjs",
+    "bundle": "tsdown && node scripts/build-client.mjs",
+    "typecheck": "tsc --noEmit",
     "test": "npm run build && node --import tsx --test \"test/**/*.test.ts\" && node test/client-bundle-smoke.mjs",
-    "pretest": "npm run build",
-    "bundle": "node scripts/build-client.mjs"
+    "shots": "node scripts/capture-shots.mjs",
+    "prepublishOnly": "pnpm build"
   },
   "dependencies": {
     "typescript": "^5.5.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -55,6 +71,19 @@
         "@deepseek-ai/dsh-client-ui-settings"
       ],
       "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryubyte/dsh-a2a.git"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

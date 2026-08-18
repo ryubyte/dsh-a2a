@@ -17,5 +17,6 @@ export declare const inject: string[];
 export declare function apply(ctx: ClientContext): void;
 type SectionProps = PropsRuntime<'settings.section'>;
 /** The A2A connection dashboard settings section. */
-export declare function DashboardSection(props: SectionProps): ReactElement;
+export declare function DashboardSection(_props: SectionProps): ReactElement;
 export {};
+//# sourceMappingURL=index.d.ts.map

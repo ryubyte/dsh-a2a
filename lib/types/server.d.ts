@@ -39,6 +39,8 @@ export interface ServerOptions {
      * dashboard track "who is talking to us".
      */
     onInbound?: (facts: InboundFacts) => void;
+    /** Called when a task reaches a terminal state (completed/failed/canceled). */
+    onTaskSettled?: (taskId: string) => void;
 }
 /** Observational facts about one inbound JSON-RPC request. */
 export interface InboundFacts {
@@ -137,3 +139,4 @@ export declare const defaultSkills: ServerSkill[];
  * AbortSignal (task cancellation / shutdown) by killing the child process.
  */
 export declare const defaultExecutor: TaskExecutor;
+//# sourceMappingURL=server.d.ts.map
