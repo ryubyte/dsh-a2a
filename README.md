@@ -1,15 +1,17 @@
 # dsh-a2a
 
+[中文文档](./README.zh-CN.md) | **English**
+
 A **DeepSeek Harness (DSH)** plugin that implements the **Agent2Agent (A2A) Protocol v1.0** (Linux Foundation, `a2aproject/A2A`, Apache-2.0).
 
-The plugin has two halves:
+It turns a DSH instance into a full A2A peer in both directions:
 
-| Mode | Direction | What it does |
-|---|---|---|
-| `client` | outbound | Discovers a remote agent via its **AgentCard**, maps each **skill** to a DSH model tool (`a2a__<name>__<skill>`), and executes remote tasks through the A2A **JSONRPC** binding. |
-| `server` | inbound | Exposes DSH as an A2A agent: serves `/.well-known/agent-card.json` plus a JSON-RPC endpoint (`SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SendStreamingMessage` over SSE) on the DSH webserver. |
+- **Client mode (outbound)** — discover a remote agent via its **AgentCard**, map each **skill** to a DSH model tool (`a2a__<name>__<skill>`), and execute remote tasks through A2A **JSON-RPC**.
+- **Server mode (inbound)** — expose this DSH to other agents: `/.well-known/agent-card.json` plus a JSON-RPC endpoint (`SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SendStreamingMessage` over SSE) on the DSH webserver.
 
-Protocol surface implemented (v1.0 names, verified against `a2aproject/A2A` `specification/a2a.proto`):
+## Features
+
+### Protocol surface (A2A v1.0)
 
 - **Discovery**: `GET /.well-known/agent-card.json` (well-known first, configured URL fallback)
 - **Unary**: `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, `GetExtendedAgentCard`
@@ -17,66 +19,125 @@ Protocol surface implemented (v1.0 names, verified against `a2aproject/A2A` `spe
 - **Task lifecycle**: `SUBMITTED → WORKING → COMPLETED / FAILED / CANCELED / REJECTED / INPUT_REQUIRED / AUTH_REQUIRED`
 - **Types**: `Task`, `Message`, `Part` (text/raw/url/data), `Artifact`, `AgentCard`, security schemes, extensions
 
-## Install & mount in a DSH profile
+### Connection dashboard (设置 → A2A 连接)
 
-The plugin is a plain npm package. In your DSH profile (or bundle):
+- **Outbound agents** — remote agents this DSH connects to (name, connection state, AgentCard URL, skill/tool counts, last activity), each with **Reconnect / Enable / Disable / Delete** controls.
+- **Inbound peers** — who is calling this DSH (label, source address, first/last seen, task count, streaming flag), with a close control.
+- **A2A server** — inbound server status with an online/offline toggle, endpoint and skill overview.
+- The panel refreshes every 3 s; `/a2a/api` serves a JSON snapshot and control endpoints, fenced to loopback/same-origin.
 
-```bash
-npm install dsh-a2a
+### Runtime configuration (a2a.json)
+
+Configuration is driven by **`a2a.json`** (per profile, UI-editable) — manage
+agents without touching the composition. The file is resolved from the active
+profile, not the launch directory: the plugin parses `--profile <name>` from
+the process command line and reads/writes `~/.dsh/profiles/<name>/a2a.json`.
+
+## Screenshots
+
+| Outbound agents (who this DSH connects to) | Inbound peers (who calls this DSH) |
+|---|---|
+| ![Outbound agents dashboard](docs/screenshots/dashboard-outbound.png) | ![Inbound peers dashboard](docs/screenshots/dashboard-inbound.png) |
+
+| Inbound with a live record | A2A server status panel |
+|---|---|
+| ![Inbound peer record](docs/screenshots/server-inbound.png) | ![A2A server status](docs/screenshots/server-serve.png) |
+
+## Installation
+
+### Option 1: from npm (recommended)
+
+Once published to npm, install into the target profile with one command and
+restart:
+
+    dsh plugin --profile <profile> add @ryubyte/dsh-a2a
+    dsh --profile <profile>
+
+`dsh plugin` installs the package into the profile and auto-registers the
+plugin layer (this package declares `dsh.bundle.patch` in `package.json`) — no
+manual configuration is needed.
+
+### Option 2: from the repository (development)
+
+For hacking on the code, requires Node.js >= 22:
+
+    # 1. Clone the repo
+    git clone https://github.com/ryubyte/dsh-a2a.git
+    cd dsh-a2a
+
+    # 2. Install deps and build
+    npm install
+    npm run build
+
+    # 3. Link into the target profile
+    dsh plugin --profile <profile> add link:$(pwd)
+
+    # 4. Restart
+    dsh --profile <profile>
+
+After changing source, re-run `npm run build` and restart.
+
+## Usage
+
+### 1. Configure a remote agent (outbound)
+
+Declare agents to connect to in the profile's `a2a.json`:
+
+```jsonc
+{
+  "agents": [
+    {
+      "name": "research",
+      "agentCardUrl": "https://research.example.com/.well-known/agent-card.json",
+      // "bearerToken": "...",
+      // "timeoutMs": 8000,
+      // "mapSkills": true,
+      // "enabled": false        // keep the entry, but don't auto-connect
+    }
+  ]
+}
 ```
 
-Add rows to the profile's `cordis.patch.yml` (see `cordis.patch.yml` in this repo for the commented template):
+Alternatively, in the Web GUI go to 设置 → A2A 连接 → 添加 Agent, paste an
+AgentCard URL to import and connect — the config is written back to
+`a2a.json`.
 
-```yaml
-# outbound: expose a remote agent's skills as model tools
-- id: a2a-remote
-  name: 'dsh-a2a'
-  config:
-    mode: client
-    name: research             # namespace → tool names a2a__research__<skill>
-    agentCardUrl: https://research.example.com/.well-known/agent-card.json
-    # bearerToken: !!js process.env.A2A_REMOTE_TOKEN
-    # timeoutMs: 60000
+Once connected, the remote agent's skills appear as model tools:
+`a2a__<name>__<skill>`.
 
-# inbound: let other agents call this DSH
-- id: a2a-local
-  name: 'dsh-a2a'
-  config:
-    mode: server
-    # baseUrl: http://127.0.0.1:3080   # optional; default: derive from webServer
-    agentName: DSH Agent
-    agentDescription: DeepSeek Harness coding agent exposed over A2A v1.0
-    agentVersion: 0.1.0
-    skills:
-      - id: coding
-        name: Coding
-        description: Execute coding and shell tasks inside the DSH workspace.
-        tags: ['coding', 'shell']
+### 2. Expose this DSH as an A2A agent (inbound)
+
+Enable server mode in `a2a.json`:
+
+```jsonc
+{
+  "mode": "server",
+  "server": {
+    "enabled": true,             // explicitly turn the inbound server on
+    // "baseUrl": "http://127.0.0.1:3080",   // optional; default: derive from webServer
+    "agentName": "My DSH Agent",
+    "agentDescription": "A DSH agent over A2A v1.0",
+    "agentVersion": "0.1.0",
+    "skills": [
+      { "id": "coding", "name": "Coding", "description": "Execute coding and shell tasks.", "tags": ["coding", "shell"] }
+    ]
+  }
+}
 ```
 
-### How the plugin binds to DSH services
+Other A2A clients discover this DSH via
+`http://<host>:<port>/.well-known/agent-card.json` and call the `/a2a` endpoint.
 
-- The plugin reads `ctx.webServer` and `ctx.tools` as **context properties inside
-  `ctx.inject(...)` / `ctx.effect(...)`** — the native Cordis pattern used by DSH
-  bundles (`dsh-client-hmr`, `dsh-web-app`, …). It exports `inject: ['webServer',
-  'tools']`, and each mode wraps its work in `ctx.inject([<service>], …)`, so a
-  composition missing one half simply idles it (no hard dependency, no crash).
-- `webServer.register` receives the real DSH `WebRoute` object
-  `{ kind: 'exact' | 'prefix', path, handler }` — matching
-  `@deepseek-ai/dsh-host-webserver`'s contract (a single-argument register).
-- **`baseUrl` is optional in server mode**: when omitted the AgentCard
-  advertises the webserver's real listen address (`http://<host>:<port>/a2a`),
-  so ephemeral/OS-assigned ports never advertise a stale URL. Set `baseUrl`
-  explicitly only when a reverse proxy fronts the instance.
+> Note: the default inbound executor runs shell commands — fine for local
+> testing only; for production, inject a constrained executor
+> programmatically (see below) and put a TLS reverse proxy in front.
 
-All registrations are fiber-scoped: Cordis disposes them on plugin stop/update.
-
-## Programmatic use
+### 3. Programmatic use
 
 ```ts
-import { A2AClient, fetchAgentCard, A2AServer, TaskStore, defaultExecutor } from 'dsh-a2a';
+import { A2AClient, A2AServer, TaskStore } from '@ryubyte/dsh-a2a';
 
-// client
+// outbound: connect to a remote agent
 const client = await A2AClient.connect('https://agent.example.com');
 const { task } = await client.sendMessage({
   messageId: crypto.randomUUID(),
@@ -87,14 +148,14 @@ for await (const ev of client.streamMessage({ messageId: crypto.randomUUID(), ro
   // ev.statusUpdate | ev.artifactUpdate | ev.task | ev.message
 }
 
-// server (with a custom executor wired to the DSH agent loop)
+// inbound: wire a custom executor to your own agent loop
 const store = new TaskStore();
 const server = new A2AServer({
   baseUrl: 'http://127.0.0.1:3080',
   agentName: 'My DSH',
   agentDescription: '...',
   agentVersion: '1.0.0',
-  execute: async ({ message }) => ({   // ← plug DSH's own loop here
+  execute: async ({ message }) => ({
     messageId: crypto.randomUUID(),
     role: 'ROLE_AGENT',
     parts: [{ text: await myAgentRun(message.parts) }],
@@ -102,57 +163,62 @@ const server = new A2AServer({
 }, store);
 ```
 
-## Connection dashboard
+## Directory structure
 
-Both modes report into one process-wide connection registry, exposed by the
-inbound half (when `webServer` is mounted) at:
+    src/
+      protocol.ts        # A2A v1.0 types & constants
+      card.ts            # AgentCard discovery / validation
+      jsonrpc.ts         # JSON-RPC 2.0 + SSE transport
+      client.ts          # outbound client (A2AClient)
+      server.ts          # inbound server + TaskStore (A2AServer)
+      outbound.ts        # skill → model-tool bridge (registerAgentTools)
+      dashboard.ts       # connection registry + control
+      a2a-config.ts      # runtime a2a.json parsing / persistence
+      index.ts           # Cordis plugin entry (client / server modes)
+      client/
+        index.ts         # browser half: settings "A2A 连接" panel
+    lib/                 # build output (index.js + client.js + types/)
+    scripts/
+      build-client.mjs   # wrap client bundle (__ModuleLoader__)
+      capture-shots.mjs  # README screenshot capture (headless Chrome + CDP)
+    cordis.patch.yml     # plugin registration row (self-mounted bundle)
+    package.json         # dsh.bundle.patch + dsh.client manifest
 
-- `GET  /a2a/api` — JSON snapshot: `{ inbound: [...], outbound: [...], at }`
-- `POST /a2a/api` — control: `{ action, target }` with
-  `reconnect-agent | close-agent | close-peer` actions
+## How it works
 
-The **settings panel** ("A2A 连接" section, registered by the browser half
-`dsh-a2a/client`) shows:
+- The plugin reads `ctx.webServer` and `ctx.tools` as context properties inside
+  `ctx.inject(...)` / `ctx.effect(...)` — the native Cordis pattern used by DSH
+  bundles (`dsh-client-hmr`, …). A composition missing either half simply idles
+  that half; nothing crashes.
+- **`baseUrl` is optional in server mode**: when omitted the AgentCard
+  advertises the webserver's real listen address, so ephemeral ports never
+  publish a stale URL. Set it explicitly only when a reverse proxy fronts the
+  instance.
+- Client-mode connection lifecycle hooks (`onReady` / `onDispose`) feed a
+  **process-wide shared registry**; multiple instances (client + server) share
+  it, and `/a2a/api` is registered once per process.
+- All registrations are fiber-scoped: Cordis disposes them on plugin
+  stop/update.
+- Disabled agents (`enabled: false`) show as grayed-out placeholder cards and
+  are **not** reconnected on restart until re-enabled.
 
-| Direction | Rows | Row actions |
-|---|---|---|
-| 入站连接 (who is connecting TO this DSH) | peer label, source address, first/last seen, task count, streaming flag | 关闭 |
-| 出站连接 (who this DSH is connected TO) | agent name, state (connected/disconnected/reconnecting), AgentCard URL, skill/tool counts, last activity | 重连 / 关闭 |
+## Known limitations
 
-`close-agent` unregisters the remote agent's tools (tool calls fail until a
-reconnect); `reconnect-agent` reconnects and re-registers them. `close-peer`
-drops an inbound peer from the dashboard (observational only). The dashboard
-refreshes every 3 s while the section is open; the API is loopback/same-origin
-fenced.
-
-Client-mode connection lifecycle hooks (`onReady` / `onDispose` on
-`registerAgentTools`) feed the registry; multiple `dsh-a2a` instances (client
-+ server) share one registry, and the `/a2a/api` route is registered once per
-process.
-
-## Security notes
-
-- The A2A spec requires **HTTPS** for production `AgentInterface.url`; DSH's `webServer` binds loopback by default. Put a TLS reverse proxy in front before exposing an inbound server beyond localhost.
-- Outbound calls send a bearer token when configured; inbound security schemes are declared on the AgentCard but enforcement is left to the composition (DSH `credentials` service).
-- The default inbound executor runs a shell command — replace it with a constrained executor in real deployments (e.g. DSH's sandbox/approval pipeline).
-- The dashboard API (`/a2a/api`) is loopback/same-origin fenced and carries no secrets; it exists for operator visibility and connection control only.
-
-## Relationship to MCP / ACP
-
-- **MCP** (already in DSH via `@deepseek-ai/dsh-mcp-client`) exposes *tools* to the model; **A2A** exposes *agents* to agents.
-- **ACP** (used by Hermes/OpenClaw for IDE↔agent) is a different protocol; this plugin implements the A2A agent↔agent standard, not ACP.
+- The dashboard API (`/a2a/api`) listens on loopback / same-origin only; it
+  carries no secrets and exists for operator visibility.
+- The default inbound executor runs shell commands directly (`/bin/sh -c`), not
+  an LLM agent; replace it with a constrained executor (e.g. DSH's
+  sandbox/approval pipeline) in production.
+- The A2A spec requires HTTPS for production `AgentInterface.url`; DSH's
+  webserver binds loopback by default, so put a TLS reverse proxy in front
+  before exposing beyond localhost.
+- Outbound bearer tokens are stored in plaintext in `a2a.json`; secure the file
+  yourself.
 
 ## Development
 
 ```bash
 npm install
-npm run build    # tsc → lib/ + browser bundle → lib/client.bundle.js
+npm run build    # tsc(types) + tsdown(lib) + wrap client → lib/client.js
 npm test         # node:test + tsx (unit/integration) + client-bundle smoke
 ```
-
-The browser half (`src/client/`) is bundled by `scripts/build-client.mjs`
-(esbuild) into `lib/client.bundle.js` in the DSH `window.__ModuleLoader__.load`
-format; `exports["./client"]` wires it into the DSH client-modules graph. The
-`./client` types come from tsc's `lib/client/index.d.ts`.
-
-Layout: `src/protocol.ts` (v1.0 types), `src/card.ts` (AgentCard discovery/validation), `src/jsonrpc.ts` (JSON-RPC 2.0 + SSE transport), `src/client.ts` (outbound client), `src/server.ts` (inbound server + TaskStore), `src/outbound.ts` (skill→tool bridge), `src/dashboard.ts` (connection registry + control), `src/index.ts` (Cordis plugin entry), `src/client/` (browser settings dashboard).
