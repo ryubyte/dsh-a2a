@@ -128,9 +128,11 @@ Enable server mode in `a2a.json`:
 Other A2A clients discover this DSH via
 `http://<host>:<port>/.well-known/agent-card.json` and call the `/a2a` endpoint.
 
-> Note: the default inbound executor runs shell commands — fine for local
-> testing only; for production, inject a constrained executor
-> programmatically (see below) and put a TLS reverse proxy in front.
+> Note: without an injected executor the inbound server **refuses** tasks
+> (returns "no executor configured — inject one") and never runs anything.
+> For local testing you may explicitly pass `shellExecutor`, which runs the
+> prompt as a `/bin/sh -c` command — trusted clients only. For production,
+> inject a constrained executor and put a TLS reverse proxy in front.
 
 ### 3. Programmatic use
 
@@ -206,9 +208,10 @@ const server = new A2AServer({
 
 - The dashboard API (`/a2a/api`) listens on loopback / same-origin only; it
   carries no secrets and exists for operator visibility.
-- The default inbound executor runs shell commands directly (`/bin/sh -c`), not
-  an LLM agent; replace it with a constrained executor (e.g. DSH's
-  sandbox/approval pipeline) in production.
+- The inbound server **refuses to run tasks by default** ("no executor
+  configured"); it only acts when you explicitly pass `shellExecutor` (local
+  testing) or a custom executor. Never expose server mode to untrusted
+  networks.
 - The A2A spec requires HTTPS for production `AgentInterface.url`; DSH's
   webserver binds loopback by default, so put a TLS reverse proxy in front
   before exposing beyond localhost.

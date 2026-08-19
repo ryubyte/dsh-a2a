@@ -118,7 +118,7 @@
 
 之后其他 A2A 客户端通过 `http://<host>:<port>/.well-known/agent-card.json` 发现本 DSH，通过 `/a2a` 端点调用。
 
-> 注：默认入站 executor 会执行 shell 命令，仅适合本机自测；生产部署请通过编程方式注入受限 executor（见下文），并置于 TLS 反向代理之后。
+> 注：未注入 executor 时，入站任务会返回「no executor configured — inject one」，**不会执行任何命令**。本机自测可显式传入 `shellExecutor`（把 prompt 当作 shell 命令执行，仅限可信客户端），生产请注入受限 executor 并置于 TLS 反向代理之后。
 
 ### 3. 编程接入
 
@@ -183,7 +183,7 @@ const server = new A2AServer({
 ## 已知限制
 
 - 面板 API（`/a2a/api`）只监听 loopback / same-origin，供运维可见性使用，不承载机密。
-- 默认入站 executor 直接执行 shell 命令（`/bin/sh -c`），非 LLM 代理；生产环境必须替换为受限 executor（如 DSH sandbox / 审批管线）。
+- 入站服务默认**拒绝执行**（未注入 executor 即返回「no executor configured」）；仅当显式传入 `shellExecutor`（本地自测）或自定义 executor 时才执行任务。切勿向不受信网络暴露 server 模式。
 - A2A 规范要求生产 `AgentInterface.url` 使用 HTTPS；DSH webServer 默认仅绑 loopback，对外暴露前需自行加 TLS。
 - 出站的 bearer token 明文存于 `a2a.json`，请自行保证该文件权限。
 
