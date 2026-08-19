@@ -115,6 +115,10 @@ export function DashboardSection(_props: SectionProps): ReactElement {
   const [tab, setTab] = useState<'out' | 'in' | 'serve'>('out');
   /** connection ids whose skill list is expanded in the outbound tab. */
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  /** Optional bearer token for the add-agent form (outbound). */
+  const [addToken, setAddToken] = useState('');
+  /** Inbound authToken input (serve tab); empty string means "clear". */
+  const [authInput, setAuthInput] = useState('');
 
   interface ServeStatus {
     enabled: boolean;
@@ -125,7 +129,12 @@ export function DashboardSection(_props: SectionProps): ReactElement {
     endpoint?: string;
     agentCardUrl?: string;
     skills?: Array<{ id: string; name: string; description?: string }>;
+    /** Legacy: true when a custom executor was injected (kept for old snapshots). */
     customExecutor?: boolean;
+    /** How inbound tasks are executed. */
+    executor?: 'custom' | 'dsh-agent' | 'none';
+    /** Whether the inbound endpoint is token-gated (never the token value). */
+    authConfigured?: boolean;
   }
 
   const refresh = async (): Promise<void> => {
@@ -191,7 +200,7 @@ const doDiscover = async (): Promise<void> => {
     const res = await fetch('/a2a/api', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'discover-agent', agentCardUrl: u }),
+      body: JSON.stringify({ action: 'discover-agent', agentCardUrl: u, bearerToken: addToken.trim() || undefined }),
     });
     const body = (await res.json()) as ControlResultApi;
     if (!body.ok || !body.message) {
@@ -209,9 +218,10 @@ const doDiscover = async (): Promise<void> => {
 const doConnect = async (): Promise<void> => {
   if (!discovered) return;
   const n = discovered.name.trim() || 'remote';
-  await act('add-agent', n, { agentCardUrl: discovered.agentCardUrl });
+  await act('add-agent', n, { agentCardUrl: discovered.agentCardUrl, bearerToken: addToken.trim() || undefined });
   if (!busy) {
     setAddUrl('');
+    setAddToken('');
     setDiscovered(null);
   }
 };
@@ -284,6 +294,22 @@ const inputStyle = { padding: '4px 8px', fontSize: 13, borderRadius: 6, border: 
               }),
               actionBtn('导入', false, () => void doDiscover(), discovering || !addUrl.trim()),
             ),
+            createElement(
+              'div',
+              { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+              createElement('input', {
+                type: 'password',
+                placeholder: 'Bearer Token(可选,发送为 Authorization: Bearer …)',
+                value: addToken,
+                onChange: (e: { target: { value: string } }) => setAddToken(e.target.value),
+                style: { ...inputStyle, flex: 1, minWidth: 260 },
+              }),
+            ),
+            createElement(
+              'div',
+              { style: { fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary, #999)' } },
+              '若远程 Agent 需要鉴权,填入 token;导入与后续调用都会带上。token 会明文存入 a2a.json。',
+            ),
             discovering
               ? createElement('div', { style: { fontSize: 13, color: 'var(--dsw-alias-label-tertiary, #999)' } }, '正在读取 Agent Card…')
               : discovered
@@ -318,7 +344,7 @@ const inputStyle = { padding: '4px 8px', fontSize: 13, borderRadius: 6, border: 
                     createElement(
                       'div',
                       { style: { display: 'flex', gap: 8, marginTop: 2 } },
-                      actionBtn('连接', true, () => void doConnect(), busy === 'add-agent'),
+                      actionBtn('连接', true, () => void doConnect(), busy?.startsWith('add-agent:') ?? false),
                       actionBtn('取消', false, () => { setDiscovered(null); setAddUrl(''); }, false),
                     ),
                   )
@@ -349,8 +375,8 @@ const inputStyle = { padding: '4px 8px', fontSize: 13, borderRadius: 6, border: 
               'span',
               { style: { marginLeft: 'auto' } },
               serve.enabled
-                ? actionBtn('下线', false, () => void act('server-disable', ''), busy === 'server-disable')
-                : actionBtn('上线', true, () => void act('server-enable', ''), busy === 'server-enable'),
+                ? actionBtn('下线', false, () => void act('server-disable', ''), busy === 'server-disable:')
+                : actionBtn('上线', true, () => void act('server-enable', ''), busy === 'server-enable:'),
             ),
           ),
           createElement(
@@ -384,13 +410,8 @@ const inputStyle = { padding: '4px 8px', fontSize: 13, borderRadius: 6, border: 
                 )
               : null,
           ),
-          serve.enabled && !serve.customExecutor
-            ? createElement(
-                'div',
-                { style: { fontSize: 12, color: 'var(--dsw-warning, #b26a00)', background: 'rgba(178,106,0,.08)', borderRadius: 6, padding: '6px 10px' } },
-                '⚠ 默认 executor 会执行 shell 命令。生产环境请通过配置指定受限的 execute 实现。',
-              )
-            : null,
+          serve.enabled ? executorNote(serve) : null,
+          serve.enabled ? authControl(serve, busy, act, authInput, setAuthInput) : null,
         )
       : null,
     // ── inbound tab ────────────────────────────────────────
@@ -591,6 +612,84 @@ function actionBtn(label: string, primary: boolean, onClick: () => void, disable
       },
     },
     label,
+  );
+}
+
+/**
+ * A semantically-correct note about how inbound tasks are executed. Dispatches
+ * on the `executor` field; falls back to the legacy `customExecutor` boolean
+ * for snapshots from an older host that didn't send `executor`.
+ */
+function executorNote(serve: {
+  executor?: 'custom' | 'dsh-agent' | 'none';
+  customExecutor?: boolean;
+}): ReactElement | null {
+  const kind = serve.executor ?? (serve.customExecutor ? 'custom' : undefined);
+  if (kind === 'custom') return null; // operator wired their own executor
+  if (kind === 'dsh-agent') {
+    return createElement(
+      'div',
+      { style: { fontSize: 12, color: 'var(--dsw-alias-label-secondary, #666)', background: 'rgba(74,125,255,.08)', borderRadius: 6, padding: '6px 10px' } },
+      'ℹ 入站任务由本 DSH 的 agent 会话执行,按 A2A contextId 一个对话一个会话。',
+    );
+  }
+  if (kind === 'none') {
+    return createElement(
+      'div',
+      { style: { fontSize: 12, color: 'var(--dsw-warning, #b26a00)', background: 'rgba(178,106,0,.08)', borderRadius: 6, padding: '6px 10px' } },
+      '⚠ 未配置 executor,且未检测到可用的 agent 循环:入站任务会被拒绝。通过配置注入 execute,或加载 agent-loop 插件。',
+    );
+  }
+  return null;
+}
+
+/**
+ * Inbound bearer-token control for the serve tab: shows whether the endpoint is
+ * token-gated, and lets the operator set or clear the shared token. The token
+ * value is never read back from the host — only whether one is configured.
+ */
+function authControl(
+  serve: { authConfigured?: boolean },
+  busy: string | null,
+  act: (a: string, t: string, p?: Record<string, unknown>) => Promise<void>,
+  authInput: string,
+  setAuthInput: (v: string) => void,
+): ReactElement {
+  const inputStyle = { padding: '4px 8px', fontSize: 13, borderRadius: 6, border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3))', background: 'var(--dsw-alias-fill-l1, rgba(127,127,127,.06))', color: 'var(--dsw-alias-label-primary, #222)' };
+  return createElement(
+    'div',
+    { style: { display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 } },
+    createElement(
+      'div',
+      { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      createElement('span', { style: { fontSize: 12.5, fontWeight: 600, color: 'var(--dsw-alias-label-primary, #222)' } }, '入站鉴权'),
+      stateDot(serve.authConfigured ? 'connected' : 'disabled'),
+      createElement(
+        'span',
+        { style: { fontSize: 12, color: serve.authConfigured ? '#2e7d32' : '#9e9e9e' } },
+        serve.authConfigured ? '已启用 Bearer 鉴权' : '未鉴权(任何客户端可调用)',
+      ),
+    ),
+    createElement(
+      'div',
+      { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+      createElement('input', {
+        type: 'password',
+        placeholder: serve.authConfigured ? '输入新 token 以替换' : '设置 Bearer Token 以开启鉴权',
+        value: authInput,
+        onChange: (e: { target: { value: string } }) => setAuthInput(e.target.value),
+        style: { ...inputStyle, flex: 1, minWidth: 220 },
+      }),
+      actionBtn('保存', true, () => { void act('set-server-auth', '', { authToken: authInput.trim() }); setAuthInput(''); }, busy === 'set-server-auth:' || !authInput.trim()),
+      serve.authConfigured
+        ? actionBtn('清除', false, () => { void act('set-server-auth', '', { authToken: '' }); setAuthInput(''); }, busy === 'set-server-auth:')
+        : null,
+    ),
+    createElement(
+      'div',
+      { style: { fontSize: 11.5, color: 'var(--dsw-alias-label-tertiary, #999)' } },
+      'token 会明文存入 a2a.json,重启后仍生效。设置后,入站 JSON-RPC 请求需带 Authorization: Bearer <token>。',
+    ),
   );
 }
 

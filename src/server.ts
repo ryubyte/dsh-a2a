@@ -159,6 +159,8 @@ export class A2AServer {
   private execute: TaskExecutor;
   private listeners = new Set<(ev: StreamResponse) => void>();
   private baseUrl: string;
+  /** Abort controllers for in-flight tasks, so CancelTask can abort the executor. */
+  private running = new Map<string, AbortController>();
 
   constructor(options: ServerOptions, store = new TaskStore()) {
     this.options = options;
@@ -185,6 +187,30 @@ export class A2AServer {
     }));
   }
 
+  /**
+   * Set or clear the shared bearer token that gates the inbound endpoint at
+   * runtime. Rebuilds the AgentCard so the `bearerAuth` security scheme is
+   * advertised (token set) or withdrawn (token cleared); `authorized()` reads
+   * `options.authToken` on each request, so the gate flips immediately. Pass
+   * `undefined` or an empty string to disable token gating.
+   */
+  setAuthToken(token?: string): void {
+    this.options.authToken = token && token.length > 0 ? token : undefined;
+    // `card` is readonly (mutated in place, like setBaseUrl): add or withdraw
+    // the bearer security scheme to match the new token state.
+    if (this.options.authToken) {
+      applyAuthScheme(this.card, this.options.authToken);
+    } else {
+      delete this.card.securitySchemes;
+      delete this.card.securityRequirements;
+    }
+  }
+
+  /** Whether the inbound endpoint is currently token-gated. */
+  get authConfigured(): boolean {
+    return Boolean(this.options.authToken);
+  }
+
   private buildCard(): AgentCard {
     const iface: AgentInterface = {
       url: `${this.baseUrl.replace(/\/$/, '')}${this.endpointPath}`,
@@ -207,14 +233,7 @@ export class A2AServer {
       skills,
       ...(this.options.iconUrl ? { iconUrl: this.options.iconUrl } : {}),
     };
-    // When a bearer token is configured, advertise it on the AgentCard per
-    // the A2A securitySchemes type so clients know to authenticate.
-    if (token) {
-      card.securitySchemes = {
-        bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'opaque' },
-      };
-      card.securityRequirements = [{ schemes: { bearerAuth: [] } }];
-    }
+    applyAuthScheme(card, token);
     return card;
   }
 
@@ -376,9 +395,15 @@ export class A2AServer {
   private async runTask(taskId: string, contextId: string, msg: Message) {
     this.store.setStatus(taskId, TaskState.WORKING);
     this.emit({ statusUpdate: { taskId, contextId, status: this.store.get(taskId)!.status } });
-    const signal = new AbortController().signal;
+    // Track a live controller so CancelTask can abort the running executor.
+    const controller = new AbortController();
+    this.running.set(taskId, controller);
     try {
-      const reply = await this.execute({ message: msg, taskId, contextId, signal });
+      const reply = await this.execute({ message: msg, taskId, contextId, signal: controller.signal });
+      // CancelTask aborts the signal AND sets the task terminal (CANCELED); the
+      // executor still returns normally, so guard against clobbering that
+      // terminal state with COMPLETED (and firing onTaskSettled a second time).
+      if (controller.signal.aborted || isTerminal(this.store.get(taskId)?.status.state as TaskState)) return;
       this.store.addArtifact(taskId, { artifactId: 'result', parts: reply.parts, lastChunk: true });
       this.store.setStatus(taskId, TaskState.COMPLETED, reply);
       this.options.onTaskSettled?.(taskId);
@@ -386,6 +411,8 @@ export class A2AServer {
       this.emit({ task });
       this.emit({ artifactUpdate: { taskId, contextId, artifact: task.artifacts![task.artifacts!.length - 1], lastChunk: true } });
     } catch (err) {
+      // Don't overwrite an already-terminal task (e.g. CANCELED) with FAILED.
+      if (controller.signal.aborted || isTerminal(this.store.get(taskId)?.status.state as TaskState)) return;
       const message: Message = {
         messageId: crypto.randomUUID(),
         role: Role.AGENT,
@@ -394,6 +421,8 @@ export class A2AServer {
       this.store.setStatus(taskId, TaskState.FAILED, message);
       this.options.onTaskSettled?.(taskId);
       this.emit({ statusUpdate: { taskId, contextId, status: this.store.get(taskId)!.status } });
+    } finally {
+      this.running.delete(taskId);
     }
   }
 
@@ -435,6 +464,9 @@ export class A2AServer {
         if (isTerminal(task.status.state as TaskState)) {
           throw { code: A2A_ERROR_CODES.TASK_CANCEL_NOT_ALLOWED, message: `Task ${id} already in terminal state ${task.status.state}` };
         }
+        // Abort the running executor (if any) so the work actually stops, not
+        // just the store status. The executor observes this via its signal.
+        this.running.get(id)?.abort();
         this.store.setStatus(id, TaskState.CANCELED);
         this.options.onTaskSettled?.(id);
         return this.store.get(id);
@@ -450,6 +482,17 @@ export class A2AServer {
     const err: JsonRpcError = { jsonrpc: '2.0', id, error: { code, message, ...(data !== undefined ? { data } : {}) } };
     return { status: 200, contentType: 'application/json', body: JSON.stringify(err) };
   }
+}
+
+/**
+ * Advertise the `bearerAuth` HTTP security scheme on an AgentCard when a token
+ * is configured. Mutates in place; a no-op when `token` is falsy. Shared by
+ * {@link A2AServer.buildCard} and {@link A2AServer.setAuthToken}.
+ */
+function applyAuthScheme(card: AgentCard, token?: string): void {
+  if (!token) return;
+  card.securitySchemes = { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'opaque' } };
+  card.securityRequirements = [{ schemes: { bearerAuth: [] } }];
 }
 
 /** Pull task ids out of a dispatch result for inbound peer tracking. */
@@ -550,3 +593,340 @@ export const shellExecutor: TaskExecutor = async ({ message, signal }) => {
  * this alias still requires an explicit opt-in.
  */
 export const defaultExecutor: TaskExecutor = shellExecutor;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DSH agent executor — run an inbound A2A task through this harness's own agent
+// loop, instead of a shell.
+//
+// The shapes below are declared STRUCTURALLY (same philosophy as the
+// `WebServerService` interface in `index.ts`): this package builds against
+// `@deepseek-ai/cordis` alone and never hard-depends on `@deepseek-ai/dsh-agent`
+// or `@deepseek-ai/dsh-agent-loop`. We only describe the slice of the live
+// `ctx.agents` service surface we actually call. The concrete runtime shapes
+// are owned by `@deepseek-ai/dsh-agent`; the agent-creation FACTORY that makes
+// `create()` succeed is owned by `@deepseek-ai/dsh-agent-loop`. A composition
+// that lacks the loop still has `ctx.agents` (the registry), but `create()`
+// rejects — which is exactly why enabling this executor is gated on a
+// factory-readiness probe in `index.ts`, and why it degrades to a readable
+// error rather than throwing raw.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The one ordered pending-message list we route inbound turns to. */
+type InboxTarget = 'next-turn' | 'next-step';
+
+/** A model-facing text block (mirrors `@deepseek-ai/dsh-llm` `TextBlock`). */
+interface AgentTextBlock {
+  type: 'text';
+  text: string;
+}
+
+/** The subset of the derived message history we read back (mirrors `Message`). */
+interface AgentMessage {
+  readonly role: 'system' | 'user' | 'assistant';
+  readonly content: ReadonlyArray<{ type: string; text?: string }>;
+}
+
+/** A user-role message accepted by `agent.send` (mirrors `UserMessage`). */
+interface AgentUserMessage {
+  readonly id: string;
+  readonly role: 'user';
+  readonly content: AgentTextBlock[];
+  readonly source: { kind: 'plugin'; plugin: string };
+}
+
+/** The slice of a live `Agent` we drive (mirrors `@deepseek-ai/dsh-agent` `Agent`). */
+interface LiveAgent {
+  readonly session: { deriveMessages(): AgentMessage[] };
+  send(message: AgentUserMessage, target: InboxTarget, wakeup: boolean): void;
+  whenIdle(): Promise<void>;
+  cancel(cause: string): void;
+}
+
+/** Owned agent + capability disposer (mirrors `AgentHandle`). */
+interface AgentHandle {
+  agent: LiveAgent;
+  dispose(): Promise<void>;
+}
+
+/**
+ * The slice of `ctx.agents` (mirrors `AgentRegistry`) this executor calls.
+ * `create()` mints a brand-new session on a caller-supplied id and REJECTS when
+ * no agent-loop factory is registered, or when a persisted log already owns the
+ * id. `resume()` loads a persisted session by id.
+ *
+ * `setup` mirrors `CreateAgentOptions.setup`: it runs inside the DSH agent
+ * factory's unpublished creation window. That is the ONLY supported place to
+ * join an agent preset (`agentPresets.mount()`), because the join must exist
+ * before `session/created`/`agent/created` — otherwise the agent publishes
+ * with an empty tool catalog (its tools, prompt sections, and skills resolve
+ * against the "empty global layer", which is exactly the failure this executor
+ * used to produce for every inbound task).
+ */
+export interface AgentRegistryLike {
+  create(options: {
+    readonly sessionId: string;
+    readonly meta?: { readonly cwd?: string; readonly agentPreset?: string };
+    readonly agentOptions?: { provider?: string; model?: string; maxTokens?: number };
+    readonly setup?: (agentCtx: unknown) => void | Promise<void>;
+  }): Promise<AgentHandle>;
+  resume(options: {
+    readonly resumeSessionId: string;
+    readonly agentOptions?: { provider?: string; model?: string; maxTokens?: number };
+    readonly setup?: (agentCtx: unknown) => void | Promise<void>;
+  }): Promise<AgentHandle>;
+}
+
+/**
+ * Structural slice of `ctx.agentPresets` (owned by `@deepseek-ai/dsh-agent-presets`),
+ * the preset roster service. Mirrors exactly the two methods the DSH host's own
+ * session entry point (`dsh-host-apiproxy` `composeAgent`) uses to compose a
+ * fresh agent:
+ *   - `resolve(id)` resolves the requested preset (or the deployment default
+ *     when `undefined`) and returns `{ id }`;
+ *   - `mount(agentCtx, id)` joins the agent's scope to the preset's standing
+ *     composition — the ONLY supported call site is the agent factory's
+ *     `setup` hook, where a failure rolls the whole creation back.
+ */
+export interface AgentPresetsLike {
+  resolve(id?: string): Promise<{ id: string }>;
+  mount(agentCtx: unknown, id: string): Promise<unknown>;
+}
+
+/** The executor function returned by {@link createDshAgentExecutor}, plus teardown. */
+interface DshAgentExecutor extends TaskExecutor {
+  /** Dispose every live per-context session this executor created. */
+  disposeAll(): Promise<void>;
+}
+
+/** Options for {@link createDshAgentExecutor}. */
+export interface DshAgentExecutorOptions {
+  /**
+   * Absolute workspace path bound to each spawned session's durable header.
+   * DSH validates this is absolute and freezes it at creation, so it MUST be
+   * absolute — pass `process.cwd()` (the profile's workspace) at wire time.
+   */
+  cwd: string;
+  /** `source.plugin` tag stamped on inbound messages (defaults to `'a2a'`). */
+  plugin?: string;
+  /** Optional static per-agent model routing forwarded to `create()`. */
+  agentOptions?: { provider?: string; model?: string; maxTokens?: number };
+  /**
+   * Optional resolver for the per-agent model selection, evaluated ONCE PER
+   * TASK just before `create()`. This is how a workspace-bound session gets a
+   * model: DSH's persona system-prompt section interpolates a `{{model}}`
+   * variable that is only filled when the agent has a selected model, and
+   * seeding that selection is the creating entry point's responsibility (the
+   * deployment default lives on `ctx.agentDefaultModel`, not on the agent).
+   * Resolving per task (rather than fixing it at wire time) means a later model
+   * switch in Settings is picked up by the next inbound task. Takes precedence
+   * over the static {@link agentOptions} when it returns a value.
+   */
+  resolveAgentOptions?: () => { provider?: string; model?: string; maxTokens?: number } | undefined;
+  /**
+   * Called ONCE per A2A context, right after its session is first opened
+   * (create or resume) and its first prompt sent. Lets the composition name the
+   * session and group it (e.g. `ctx.sessionTitle.rename` + a workspace attach)
+   * without this module depending on those services. Failures are swallowed by
+   * the caller — naming/grouping is cosmetic and must never fail a task.
+   */
+  onSessionOpened?: (info: { sessionId: string; contextId: string; session: LiveAgent['session']; firstPrompt: string }) => void | Promise<void>;
+  /**
+   * The DSH agent-preset roster (`ctx.agentPresets`), probed by the caller via
+   * the reflection layer — see `probeAgentPresets` in `index.ts`. When present,
+   * every spawned session is composed from the deployment's default preset so
+   * it actually gets tools (shell, fs, skills …). Without a roster, sessions
+   * keep the legacy behavior: they run against the host composition only.
+   */
+  agentPresets?: AgentPresetsLike;
+}
+
+/** Flatten A2A message parts into a single prompt string (text parts only). */
+function partsToPrompt(parts: Part[]): string {
+  return parts
+    .map((p) => ('text' in p && typeof p.text === 'string' ? p.text : ''))
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+/** Read the last assistant message's text off an agent's derived history. */
+function lastAssistantText(agent: LiveAgent): string {
+  const history = agent.session.deriveMessages();
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role === 'assistant') {
+      return history[i].content
+        .map((b) => (b.type === 'text' && typeof b.text === 'string' ? b.text : ''))
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+    }
+  }
+  return '';
+}
+
+/** Derive a stable session id for an A2A context id. */
+function sessionIdForContext(contextId: string): string {
+  return `a2a-${contextId}`;
+}
+
+/**
+ * DSH agent executor: forward each inbound A2A task to this harness's own agent
+ * loop and return the assistant reply as the task artifact.
+ *
+ * ONE A2A CONTEXT ⇒ ONE SESSION. A2A already scopes a conversation by
+ * `contextId`, so this executor keeps one workspace-bound agent session per
+ * context: the first task for a context `create()`s it (session id derived from
+ * the context, `meta.cwd` from `opts.cwd`), and later tasks for the same
+ * context reuse the SAME live agent so history accumulates. Distinct contexts
+ * get distinct sessions. A fresh process that sees a known context first tries
+ * `resume()` (load persisted history), falling back to `create()`.
+ *
+ * Sessions are NOT disposed per task — a disposed session couldn't accumulate
+ * context. The returned executor exposes {@link DshAgentExecutor.disposeAll} so
+ * the plugin disposes every live per-context session on unload/teardown.
+ *
+ * Per-context work is serialized on a promise chain so concurrent tasks for the
+ * same context (and the shared `whenIdle()` — a whole-agent quiescence signal,
+ * not a per-message one) can't interleave. Different contexts run in parallel.
+ *
+ * Enable this via the plugin's `execute` precedence in `index.ts`; it is not
+ * `A2AServer`'s default (the default stays {@link notConfiguredExecutor}).
+ */
+export function createDshAgentExecutor(
+  agents: AgentRegistryLike,
+  opts: DshAgentExecutorOptions,
+): DshAgentExecutor {
+  const plugin = opts.plugin ?? 'a2a';
+  // Live per-context handles and the serialization tail for each context.
+  const handles = new Map<string, AgentHandle>();
+  const tails = new Map<string, Promise<unknown>>();
+
+  /**
+   * Get or open the live agent for a context. Returns the agent and whether it
+   * was JUST opened (so the caller fires the one-time onSessionOpened hook after
+   * the first prompt lands, keeping "open" and "first message" atomic per tail).
+   * `justOpened` is true only on the create/resume path — a cached handle returns
+   * false — so it alone gates the once-per-context hook; serialization on the
+   * per-context tail guarantees no two openings race.
+   */
+  const agentFor = async (contextId: string): Promise<{ agent: LiveAgent; sessionId: string; justOpened: boolean }> => {
+    const sessionId = sessionIdForContext(contextId);
+    const existing = handles.get(contextId);
+    if (existing) return { agent: existing.agent, sessionId, justOpened: false };
+    const agentOptions = opts.resolveAgentOptions?.() ?? opts.agentOptions;
+    const withModel = agentOptions ? { agentOptions } : {};
+    // Join an agent preset so the spawned session actually has tools: in DSH,
+    // an agent's tool catalog, prompt sections, and skills all come from its
+    // preset composition. Without the join, the agent publishes against the
+    // "empty global layer" and every inbound task degenerates to pure text
+    // (the model can only write `<invoke …>` markup as if it were text — the
+    // exact failure the a2a-test report described). Resolution mirrors
+    // dsh-host-apiproxy's composeAgent(): resolve the id BEFORE create (the
+    // session boundary snapshots meta before async setup) and mount inside
+    // setup (failure rolls creation back). A deployment without a preset
+    // roster (no `agentPresets` service) keeps the pre-preset behavior.
+    const presets = opts.agentPresets;
+    let presetId: string | undefined;
+    let setup: ((agentCtx: unknown) => Promise<void>) | undefined;
+    if (presets) {
+      try {
+        presetId = (await presets.resolve()).id;
+        if (!presetId) throw new Error('agent preset roster resolved to no id');
+        setup = async (agentCtx: unknown): Promise<void> => {
+          await presets.mount(agentCtx, presetId!);
+        };
+      } catch (err) {
+        // A broken/unknown roster must fail creation loudly, not silently
+        // spawn a tool-less agent — that is exactly the defect being fixed.
+        throw new Error(`a2a: failed to resolve agent preset: ${(err as Error).message}`);
+      }
+    }
+    const withPreset = presetId ? { meta: { cwd: opts.cwd, agentPreset: presetId } } : { meta: { cwd: opts.cwd } };
+    const createOptions = { sessionId, ...withPreset, ...withModel, ...(setup ? { setup } : {}) };
+    // Create fresh; if a persisted log already owns the id, resume it so history
+    // carries over. Any other create() failure is re-thrown.
+    let handle: AgentHandle;
+    try {
+      handle = await agents.create(createOptions);
+    } catch (err) {
+      if (/already (has|owns)|persisted/i.test((err as Error).message)) {
+        handle = await agents.resume({ resumeSessionId: sessionId, ...withModel, ...(setup ? { setup } : {}) });
+      } else {
+        throw err;
+      }
+    }
+    handles.set(contextId, handle);
+    return { agent: handle.agent, sessionId, justOpened: true };
+  };
+
+  /** Run one turn on a context's session, serialized behind its tail. */
+  const runTurn = async (contextId: string, prompt: string, signal?: AbortSignal): Promise<string> => {
+    const { agent, sessionId, justOpened } = await agentFor(contextId);
+    const onAbort = (): void => agent.cancel('a2a-canceled');
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+    const userMessage: AgentUserMessage = Object.freeze<AgentUserMessage>({
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: [{ type: 'text', text: prompt }],
+      source: { kind: 'plugin', plugin },
+    });
+    agent.send(userMessage, 'next-turn', true);
+    // Fire the one-time naming/grouping hook after the first prompt is queued
+    // (so the title provider has an eligible message).
+    if (justOpened) {
+      try {
+        await opts.onSessionOpened?.({ sessionId, contextId, session: agent.session, firstPrompt: prompt });
+      } catch {
+        // Naming/grouping is cosmetic — never fail the task over it.
+      }
+    }
+    await agent.whenIdle();
+    return lastAssistantText(agent);
+  };
+
+  const executor = (async ({ message, contextId, signal }) => {
+    const prompt = partsToPrompt(message.parts);
+    if (!prompt) {
+      return { messageId: crypto.randomUUID(), role: Role.AGENT, parts: [{ text: 'No prompt provided.' }] };
+    }
+    // A2A guarantees a stable contextId per conversation (TaskStore assigns one
+    // when a message omits it), so it's the session key directly.
+    const ctxKey = contextId;
+    // Serialize per context: chain this task behind the context's tail so
+    // concurrent tasks for the same conversation never interleave turns.
+    const prior = tails.get(ctxKey) ?? Promise.resolve();
+    const run = prior.catch(() => {}).then(() => runTurn(ctxKey, prompt, signal));
+    tails.set(ctxKey, run);
+    try {
+      const replyText = await run;
+      const text = signal?.aborted ? `(canceled) ${replyText}`.trim() : replyText || '(no reply)';
+      return { messageId: crypto.randomUUID(), role: Role.AGENT, parts: [{ text }] };
+    } catch (err) {
+      // Most common cause: no agent-loop factory (bare dsh-base) — create()
+      // rejects. Surface it as a readable artifact, not a raw throw.
+      return {
+        messageId: crypto.randomUUID(),
+        role: Role.AGENT,
+        parts: [{ text: `DSH agent executor error: ${(err as Error).message}` }],
+      };
+    } finally {
+      // Clear the tail only if it's still ours (no later task chained on).
+      if (tails.get(ctxKey) === run) tails.delete(ctxKey);
+    }
+  }) as DshAgentExecutor;
+
+  executor.disposeAll = async (): Promise<void> => {
+    const live = [...handles.values()];
+    const pending = [...tails.values()];
+    handles.clear();
+    tails.clear();
+    // Let in-flight turns settle before tearing their sessions down, so a
+    // running turn isn't disposed out from under itself.
+    await Promise.allSettled(pending);
+    // dispose() is a capability: not calling it leaks the agent + session.
+    await Promise.allSettled(live.map((h) => h.dispose()));
+  };
+
+  return executor;
+}

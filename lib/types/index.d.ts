@@ -22,7 +22,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { type ServerOptions } from './server.js';
+import { type ServerOptions, type AgentRegistryLike } from './server.js';
 export interface A2APluginConfig {
     mode?: 'client' | 'server' | 'both';
     name?: string;
@@ -48,7 +48,8 @@ export { A2AClient } from './client.js';
 export * from './protocol.js';
 export * from './errors.js';
 export { fetchAgentCard } from './card.js';
-export { A2AServer, TaskStore, defaultExecutor, notConfiguredExecutor, shellExecutor, defaultSkills } from './server.js';
+export { A2AServer, TaskStore, defaultExecutor, notConfiguredExecutor, shellExecutor, defaultSkills, createDshAgentExecutor } from './server.js';
+export type { AgentRegistryLike, AgentPresetsLike, DshAgentExecutorOptions } from './server.js';
 export { registerAgentTools } from './outbound.js';
 export { DashboardRegistry, getSharedRegistry } from './dashboard.js';
 export type { DashboardSnapshot, InboundPeer, OutboundAgent, ControlResult, } from './dashboard.js';
@@ -69,14 +70,50 @@ export interface WebServerService {
         handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
     }): () => void;
 }
+/**
+ * Structural slice of `ctx.agentDefaultModel` (owned by
+ * `@deepseek-ai/dsh-agent-default-model`). It holds the deployment's default
+ * `{ provider, model }` (layered with the user's Settings choice). Reading it
+ * to seed a newly-created agent's model is the creating entry point's job — a
+ * fresh session has no model selection, and DSH's persona system prompt fails
+ * assembly on an empty `{{model}}` variable otherwise.
+ */
+export interface AgentDefaultModelService {
+    currentSelection(): {
+        provider?: string;
+        model?: string;
+        reasoningEffort?: string;
+    };
+}
+/**
+ * Structural slice of `ctx.sessionTitle` (owned by `@deepseek-ai/dsh-session-title`).
+ * `rename` accepts an explicit user title and pins it. We name inbound sessions
+ * ourselves because their prompts carry a `plugin` source, which the title
+ * service's automatic first-prompt naming deliberately ignores (human messages
+ * only) — so without this they fall back to the cwd basename.
+ */
+export interface SessionTitleService {
+    rename(session: unknown, title: string): unknown;
+}
 declare module '@deepseek-ai/cordis' {
     interface Context {
         /** Provided by @deepseek-ai/dsh-host-webserver. */
         webServer: WebServerService;
+        /** Provided by @deepseek-ai/dsh-agent-default-model (optional). */
+        agentDefaultModel?: AgentDefaultModelService;
+        /** Provided by @deepseek-ai/dsh-session-title (optional). */
+        sessionTitle?: SessionTitleService;
         /** Provided by @deepseek-ai/dsh-tools. */
         tools: {
             register(def: unknown): () => void;
         };
+        /**
+         * Provided by @deepseek-ai/dsh-agent (the agent registry). Present whenever
+         * that layer is composed, but `create()` only succeeds once an agent-loop
+         * plugin has registered its factory — so server mode probes readiness
+         * before enabling {@link createDshAgentExecutor}, and never hard-injects it.
+         */
+        agents?: AgentRegistryLike;
     }
 }
 export declare const name = "a2a";

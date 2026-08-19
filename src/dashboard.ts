@@ -91,11 +91,13 @@ export interface DashboardControlHooks {
   /** Reconnect is not meaningful for an inbound peer — rejects unless overridden. */
   reconnectPeer?: (peerId: string) => Promise<ControlResult>;
   /** Runtime-add an outbound agent (visual config). Returns the new connection id. */
-  addAgent?: (name: string, agentCardUrl: string) => Promise<ControlResult>;
+  addAgent?: (name: string, agentCardUrl: string, opts?: { bearerToken?: string }) => Promise<ControlResult>;
   /** Discover an Agent Card without connecting (for the import preview). */
-  discoverAgent?: (agentCardUrl: string) => Promise<ControlResult>;
+  discoverAgent?: (agentCardUrl: string, opts?: { bearerToken?: string }) => Promise<ControlResult>;
   /** Enable/disable the inbound A2A server (serve routes) at runtime. */
   setServerEnabled?: (enabled: boolean) => Promise<ControlResult>;
+  /** Set or clear the inbound server's shared bearer token at runtime (persisted). */
+  setServerAuthToken?: (token?: string) => Promise<ControlResult>;
   /** Read current inbound server status (for the serve panel). */
   serverStatus?: () => ControlResult;
   /** Runtime-remove an outbound agent by its connection id. */
@@ -271,16 +273,18 @@ export class DashboardRegistry {
       case 'discover-agent': {
         const url = (payload?.agentCardUrl as string) ?? target;
         if (!url) return { ok: false, message: 'discover-agent requires agentCardUrl' };
+        const bearerToken = (payload?.bearerToken as string) || undefined;
         return this.hooks.discoverAgent
-          ? this.hooks.discoverAgent(url)
+          ? this.hooks.discoverAgent(url, { bearerToken })
           : { ok: false, message: 'discover-agent is not wired' };
       }
       case 'add-agent': {
         const name = (payload?.name as string) ?? target;
         const url = payload?.agentCardUrl as string | undefined;
         if (!url) return { ok: false, message: 'add-agent requires agentCardUrl' };
+        const bearerToken = (payload?.bearerToken as string) || undefined;
         return this.hooks.addAgent
-          ? this.hooks.addAgent(name, url)
+          ? this.hooks.addAgent(name, url, { bearerToken })
           : { ok: false, message: 'add-agent is not wired (client mode not mounted)' };
       }
       case 'remove-agent':
@@ -295,6 +299,14 @@ export class DashboardRegistry {
         return this.hooks.setServerEnabled
           ? this.hooks.setServerEnabled(false)
           : { ok: false, message: 'server control is not wired (server mode not mounted)' };
+      case 'set-server-auth': {
+        // Empty/missing token clears the gate. The token value is never echoed
+        // back in the result message.
+        const token = (payload?.authToken as string) || undefined;
+        return this.hooks.setServerAuthToken
+          ? this.hooks.setServerAuthToken(token)
+          : { ok: false, message: 'set-server-auth is not wired (server mode not mounted)' };
+      }
       case 'server-status':
         return this.hooks.serverStatus
           ? Promise.resolve(this.hooks.serverStatus())
