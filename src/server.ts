@@ -42,6 +42,14 @@ export interface ServerOptions {
   skills?: ServerSkill[];
   /** Override the executor that runs an incoming task. */
   execute?: TaskExecutor;
+  /**
+   * Optional shared bearer token. When set, the AgentCard declares an
+   * `http`/`bearer` security scheme and every inbound JSON-RPC request must
+   * carry `Authorization: Bearer <token>` or it is rejected with 401. When
+   * unset, no scheme is advertised and requests are not token-gated (but the
+   * default executor still refuses to act unless one is injected).
+   */
+  authToken?: string;
   /** Extra custom headers on the AgentCard (rarely needed). */
   iconUrl?: string;
   defaultInputModes?: string[];
@@ -186,7 +194,8 @@ export class A2AServer {
     // No implicit skills: only what the deployer configured. Publishing
     // nothing is safer than inventing a default capability.
     const skills: AgentSkill[] = this.options.skills ?? [];
-    return {
+    const token = this.options.authToken;
+    const card: AgentCard = {
       name: this.options.agentName,
       description: this.options.agentDescription,
       version: this.options.agentVersion,
@@ -198,6 +207,26 @@ export class A2AServer {
       skills,
       ...(this.options.iconUrl ? { iconUrl: this.options.iconUrl } : {}),
     };
+    // When a bearer token is configured, advertise it on the AgentCard per
+    // the A2A securitySchemes type so clients know to authenticate.
+    if (token) {
+      card.securitySchemes = {
+        bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'opaque' },
+      };
+      card.securityRequirements = [{ schemes: { bearerAuth: [] } }];
+    }
+    return card;
+  }
+
+  /** True when the request carries the configured bearer token. */
+  private authorized(req: { headers?: Record<string, string> }): boolean {
+    const token = this.options.authToken;
+    if (!token) return true; // no scheme configured → not token-gated
+    const h = req.headers ?? {};
+    const auth = h['authorization'] ?? h['Authorization'];
+    if (!auth) return false;
+    const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
+    return !!m && m[1] === token;
   }
 
   private emit(ev: StreamResponse) {
@@ -205,7 +234,7 @@ export class A2AServer {
   }
 
   /** Route an inbound HTTP request; returns true when handled. */
-  async handle(req: { method?: string; url?: string; headers?: { 'content-type'?: string }; socket?: { remoteAddress?: string; remotePort?: number } }, body: string): Promise<{ status: number; contentType: string; body: string }> {
+  async handle(req: { method?: string; url?: string; headers?: { 'content-type'?: string }; socket?: { remoteAddress?: string; remotePort?: number } }, body: string): Promise<{ status: number; contentType: string; body: string; headers?: Record<string, string> }> {
     const path = (req.url ?? '').split('?')[0];
     // AgentCard discovery
     if (req.method === 'GET' && (path === '/.well-known/agent-card.json' || path === this.endpointPath + '/card')) {
@@ -217,6 +246,18 @@ export class A2AServer {
     }
     // JSON-RPC
     if (req.method === 'POST' && path === this.endpointPath) {
+      if (!this.authorized(req)) {
+        return {
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32001, message: 'Unauthorized' },
+          }),
+          headers: { 'WWW-Authenticate': 'Bearer' },
+        };
+      }
       let payload: unknown;
       try {
         payload = JSON.parse(body);
@@ -258,6 +299,10 @@ export class A2AServer {
     if (req.method !== 'POST' || path !== this.endpointPath) {
       onEvent(`event: error\ndata: ${JSON.stringify({ code: 404, message: 'Not Found' })}\n\n`);
       return { status: 200 };
+    }
+    if (!this.authorized(req)) {
+      onEvent(`event: error\ndata: ${JSON.stringify({ code: -32001, message: 'Unauthorized' })}\n\n`);
+      return { status: 401 };
     }
     let payload: unknown;
     try {

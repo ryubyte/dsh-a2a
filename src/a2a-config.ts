@@ -47,6 +47,8 @@ export interface PersistedServerConfig {
   agentDescription?: string;
   agentVersion?: string;
   endpointPath?: string;
+  /** Optional shared bearer token protecting the inbound /a2a endpoint. */
+  authToken?: string;
   skills?: Array<{ id: string; name: string; description: string; tags?: string[]; examples?: string[] }>;
 }
 
@@ -195,6 +197,7 @@ export function mergePersisted(base: A2APluginConfig, persisted: PersistedA2ACon
     if (pServer.agentDescription) merged.agentDescription = pServer.agentDescription;
     if (pServer.agentVersion) merged.agentVersion = pServer.agentVersion;
     if (pServer.endpointPath) merged.endpointPath = pServer.endpointPath;
+    if (pServer.authToken !== undefined) merged.authToken = pServer.authToken;
     if (pServer.skills) merged.skills = pServer.skills;
   }
   return merged;

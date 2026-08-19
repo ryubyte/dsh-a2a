@@ -40,6 +40,8 @@ export interface PersistedServerConfig {
     agentDescription?: string;
     agentVersion?: string;
     endpointPath?: string;
+    /** Optional shared bearer token protecting the inbound /a2a endpoint. */
+    authToken?: string;
     skills?: Array<{
         id: string;
         name: string;

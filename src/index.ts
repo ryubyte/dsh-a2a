@@ -54,6 +54,8 @@ export interface A2APluginConfig {
   skills?: ServerOptions['skills'];
   endpointPath?: string;
   execute?: ServerOptions['execute'];
+  /** Optional shared bearer token protecting the inbound /a2a endpoint. */
+  authToken?: string;
   // dashboard
   /** Serve the dashboard API on the webserver (default true). */
   dashboard?: boolean;
@@ -482,6 +484,7 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
             skills: mergedConfig.skills,
             endpointPath,
             execute: mergedConfig.execute,
+            authToken: mergedConfig.authToken,
             onInbound: (facts) => {
               const peerId = dashboard.touchInbound(
                 { headers: facts.headers, source: facts.source },
@@ -554,7 +557,7 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
                   return;
                 }
                 const out = await server.handle(toServerReq(req), body);
-                res.writeHead(out.status, { 'content-type': out.contentType });
+                res.writeHead(out.status, { 'content-type': out.contentType, ...(out.headers ?? {}) });
                 res.end(out.body);
               },
             }),

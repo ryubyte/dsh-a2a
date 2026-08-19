@@ -39,6 +39,8 @@ export interface A2APluginConfig {
     skills?: ServerOptions['skills'];
     endpointPath?: string;
     execute?: ServerOptions['execute'];
+    /** Optional shared bearer token protecting the inbound /a2a endpoint. */
+    authToken?: string;
     /** Serve the dashboard API on the webserver (default true). */
     dashboard?: boolean;
 }

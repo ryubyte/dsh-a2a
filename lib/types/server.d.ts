@@ -27,6 +27,14 @@ export interface ServerOptions {
     skills?: ServerSkill[];
     /** Override the executor that runs an incoming task. */
     execute?: TaskExecutor;
+    /**
+     * Optional shared bearer token. When set, the AgentCard declares an
+     * `http`/`bearer` security scheme and every inbound JSON-RPC request must
+     * carry `Authorization: Bearer <token>` or it is rejected with 401. When
+     * unset, no scheme is advertised and requests are not token-gated (but the
+     * default executor still refuses to act unless one is injected).
+     */
+    authToken?: string;
     /** Extra custom headers on the AgentCard (rarely needed). */
     iconUrl?: string;
     defaultInputModes?: string[];
@@ -97,6 +105,8 @@ export declare class A2AServer {
      */
     setBaseUrl(baseUrl: string): void;
     private buildCard;
+    /** True when the request carries the configured bearer token. */
+    private authorized;
     private emit;
     /** Route an inbound HTTP request; returns true when handled. */
     handle(req: {
@@ -113,6 +123,7 @@ export declare class A2AServer {
         status: number;
         contentType: string;
         body: string;
+        headers?: Record<string, string>;
     }>;
     handleStream(req: {
         method?: string;

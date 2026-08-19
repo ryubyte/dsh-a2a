@@ -339,3 +339,59 @@ test('client mode dashboard tracks outbound agent and supports close', async () 
   // Disposal tears the connection down: the row leaves the registry.
   assert.equal(getSharedRegistry().snapshot().outbound.length, 0);
 });
+
+test('A2AServer with authToken returns 401 on missing/incorrect token', async () => {
+  const server = new A2AServer({
+    baseUrl: 'http://127.0.0.1:3080',
+    agentName: 'T',
+    agentVersion: '1.0.0',
+    execute: async ({ message }) => ({
+      messageId: 'm',
+      role: 'ROLE_AGENT',
+      parts: [{ text: 'ok' }],
+    }),
+    authToken: 'secret123',
+  });
+  // Missing token
+  const noAuth = await server.handle(
+    { method: 'POST', url: '/a2a' },
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'SendMessage', params: { message: { role: 'ROLE_USER', parts: [{ text: 'hi' }] } } }),
+  );
+  assert.equal(noAuth.status, 401);
+  assert.ok(noAuth.headers?.['WWW-Authenticate'] === 'Bearer');
+  // Wrong token
+  const wrong = await server.handle(
+    { method: 'POST', url: '/a2a', headers: { authorization: 'Bearer not-secret' } },
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'SendMessage', params: { message: { role: 'ROLE_USER', parts: [{ text: 'hi' }] } } }),
+  );
+  assert.equal(wrong.status, 401);
+  // Correct token passes
+  const ok = await server.handle(
+    { method: 'POST', url: '/a2a', headers: { authorization: 'Bearer secret123' } },
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'SendMessage', params: { message: { role: 'ROLE_USER', parts: [{ text: 'hi' }] } } }),
+  );
+  assert.equal(ok.status, 200);
+  const json = JSON.parse(ok.body);
+  assert.equal(json.result.task.status.state, TaskState.COMPLETED);
+  // AgentCard declares the scheme and requirement
+  const card = JSON.parse((await server.handle({ method: 'GET', url: '/.well-known/agent-card.json' })).body);
+  assert.ok(card.securitySchemes?.bearerAuth?.type === 'http');
+  assert.ok(card.securitySchemes?.bearerAuth?.scheme === 'bearer');
+  assert.ok(Array.isArray(card.securityRequirements) && card.securityRequirements[0]?.schemes?.bearerAuth);
+});
+
+test('A2AServer without authToken does not require auth', async () => {
+  const server = new A2AServer({
+    baseUrl: 'http://127.0.0.1:3080',
+    agentName: 'T',
+    agentVersion: '1.0.0',
+    execute: async () => ({ messageId: 'm', role: 'ROLE_AGENT', parts: [{ text: 'ok' }] }),
+  });
+  const res = await server.handle(
+    { method: 'POST', url: '/a2a' },
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'SendMessage', params: { message: { role: 'ROLE_USER', parts: [{ text: 'hi' }] } } }),
+  );
+  assert.equal(res.status, 200);
+  const card = JSON.parse((await server.handle({ method: 'GET', url: '/.well-known/agent-card.json' })).body);
+  assert.equal(card.securitySchemes, undefined);
+});
