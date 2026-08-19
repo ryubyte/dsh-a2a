@@ -17,14 +17,15 @@ It turns a DSH instance into a full A2A peer in both directions:
 - **Unary**: `SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, `GetExtendedAgentCard`
 - **Streaming**: `SendStreamingMessage` (SSE) / `SubscribeToTask`, with `TaskStatusUpdateEvent` + `TaskArtifactUpdateEvent`
 - **Task lifecycle**: `SUBMITTED → WORKING → COMPLETED / FAILED / CANCELED / REJECTED / INPUT_REQUIRED / AUTH_REQUIRED`
+- **Auth**: outbound sends a per-agent Bearer token (`Authorization: Bearer …`); inbound can protect the endpoint with a shared Bearer token — when set, the AgentCard declares a `bearerAuth` scheme and requests without/with a wrong token get 401 (both unary calls and the SSE stream)
 - **Types**: `Task`, `Message`, `Part` (text/raw/url/data), `Artifact`, `AgentCard`, security schemes, extensions
 
 ### Connection dashboard (设置 → A2A 连接)
 
-- **Outbound agents** — remote agents this DSH connects to (name, connection state, AgentCard URL, skill/tool counts, last activity), each with **Reconnect / Enable / Disable / Delete** controls.
+- **Outbound agents** — remote agents this DSH connects to (name, connection state, AgentCard URL, skill/tool counts, last activity), each with **Reconnect / Enable / Disable / Delete** controls. When adding an agent you can supply an optional **Bearer token** — it is sent as `Authorization: Bearer …` on both the AgentCard fetch and every JSON-RPC call, and persisted alongside the agent in `a2a.json`.
 - **Inbound peers** — who is calling this DSH (label, source address, first/last seen, task count, streaming flag), with a close control.
-- **A2A server** — inbound server status with an online/offline toggle, endpoint and skill overview.
-- The panel refreshes every 3 s; `/a2a/api` serves a JSON snapshot and control endpoints, fenced to loopback/same-origin.
+- **A2A server** — inbound server status with an online/offline toggle, endpoint and skill overview; it also shows **who executes inbound tasks** (custom executor / this DSH's agent session / none) and an **inbound auth** control to set or clear the shared Bearer token that gates the endpoint (persisted to `a2a.json`, effective immediately).
+- The panel refreshes every 3 s; `/a2a/api` serves a JSON snapshot and control endpoints, fenced to loopback/same-origin (the token value is never returned in the snapshot — only whether one is configured).
 
 ### Runtime configuration (a2a.json)
 
@@ -105,6 +106,10 @@ AgentCard URL to import and connect — the config is written back to
 Once connected, the remote agent's skills appear as model tools:
 `a2a__<name>__<skill>`.
 
+A local agent session's repeated tool calls to a given remote agent reuse one
+A2A `contextId`, so they land in the same remote session with cross-turn memory;
+different local sessions are isolated into separate conversations.
+
 ### 2. Expose this DSH as an A2A agent (inbound)
 
 Enable server mode in `a2a.json`:
@@ -128,11 +133,44 @@ Enable server mode in `a2a.json`:
 Other A2A clients discover this DSH via
 `http://<host>:<port>/.well-known/agent-card.json` and call the `/a2a` endpoint.
 
-> Note: without an injected executor the inbound server **refuses** tasks
-> (returns "no executor configured — inject one") and never runs anything.
-> For local testing you may explicitly pass `shellExecutor`, which runs the
-> prompt as a `/bin/sh -c` command — trusted clients only. For production,
-> inject a constrained executor and put a TLS reverse proxy in front.
+#### Who executes an inbound task (executor precedence)
+
+On each inbound task the server picks an executor in this order:
+
+1. **Explicit `execute`** (injected programmatically) — yours wins.
+2. **This DSH's own agent session** (the default, when an agent loop is
+   present) — **one session per A2A `contextId`**: the first task for a context
+   `ctx.agents.create()`s a session (later tasks for the same context reuse it,
+   so history accumulates; a restarted process `resume`s it on demand), sends
+   the message as a `next-turn` waking item, awaits `whenIdle()`, and takes the
+   latest assistant reply as the A2A artifact. Concurrent tasks for one context
+   are serialized; distinct contexts run in parallel. Sessions are not disposed
+   per task (that would defeat context accumulation) — all are disposed on
+   plugin unload/disable. Turning on server mode is enough — no code.
+3. **`notConfiguredExecutor`** (fallback) — when nothing is injected *and* no
+   usable agent loop is composed (e.g. a bare dsh-base profile), it returns
+   "no executor configured — inject one" and **runs nothing**.
+
+> On "present": `ctx.agents` (the registry) existing ≠ being able to create an
+> agent. `create()` needs a factory registered by an agent-loop plugin; without
+> it `create()` rejects and the DSH agent executor surfaces that as a readable
+> error rather than throwing. So a minimal profile still needs an explicit
+> executor.
+>
+> Session ↔ cwd: a DSH session validates `cwd` as an absolute path and freezes
+> it into the session header at creation. Inbound sessions use a **dedicated**
+> cwd `<profile>/.a2a-sessions` (kept separate from the profile root so they
+> don't crowd your interactive sessions). They appear in the session list's
+> "Ungrouped" bucket, each named `A2A: <first-prompt summary>` (inbound messages
+> carry a plugin source, which DSH's automatic titling ignores, so we name it
+> explicitly). Naming is cosmetic — failures are logged, never failing the task.
+>
+> Cancellation: `CancelTask` aborts the running task's executor signal, actually
+> stopping the agent turn (not just flipping task status).
+>
+> For local testing you may still pass `shellExecutor`, which runs the prompt as
+> a `/bin/sh -c` command — trusted clients only. For production put a TLS
+> reverse proxy in front and set `authToken` as needed.
 
 ### 3. Programmatic use
 
@@ -208,15 +246,17 @@ const server = new A2AServer({
 
 - The dashboard API (`/a2a/api`) listens on loopback / same-origin only; it
   carries no secrets and exists for operator visibility.
-- The inbound server **refuses to run tasks by default** ("no executor
-  configured"); it only acts when you explicitly pass `shellExecutor` (local
-  testing) or a custom executor. Never expose server mode to untrusted
-  networks.
+- Inbound execution follows the [executor precedence](#who-executes-an-inbound-task-executor-precedence):
+  with an agent loop present it defaults to this DSH's own cwd-bound
+  session; otherwise (and with nothing injected) it **refuses** and returns
+  "no executor configured". `shellExecutor` is local-testing only. Whatever the
+  executor, never expose server mode to untrusted networks (no auth by default
+  unless you set `authToken`).
 - The A2A spec requires HTTPS for production `AgentInterface.url`; DSH's
   webserver binds loopback by default, so put a TLS reverse proxy in front
   before exposing beyond localhost.
-- Outbound bearer tokens are stored in plaintext in `a2a.json`; secure the file
-  yourself.
+- Bearer tokens — both the outbound per-agent token and the inbound endpoint
+  `authToken` — are stored in plaintext in `a2a.json`; secure the file yourself.
 
 ## Development
 
