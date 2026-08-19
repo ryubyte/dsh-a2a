@@ -134,9 +134,31 @@ export declare class A2AServer {
 }
 export declare const defaultSkills: ServerSkill[];
 /**
- * Default executor: run the incoming prompt through the system shell and
+ * Safe default executor: refuses to act, telling the caller to inject a real
+ * executor. Used when an `A2AServer` is constructed without an `execute`
+ * option, so an inbound message never triggers arbitrary action (in particular
+ * never a shell command) unless the operator explicitly configured one.
+ */
+export declare const notConfiguredExecutor: TaskExecutor;
+/**
+ * Shell executor: run the incoming prompt through the system shell and
  * return the captured stdout/stderr as the task artifact. Honors the
  * AbortSignal (task cancellation / shutdown) by killing the child process.
+ *
+ * This is local-testing-only: arbitrary text from an inbound message becomes
+ * a `/bin/sh -c` command, so only use it against a trusted client. It is
+ * deliberately NOT the default — pass it explicitly to opt in:
+ *
+ * ```ts
+ * const server = new A2AServer({ ..., execute: shellExecutor }, store);
+ * ```
+ */
+export declare const shellExecutor: TaskExecutor;
+/**
+ * Backwards-compatible alias for {@link shellExecutor}. Kept for code that
+ * explicitly opted into the shell executor before it was renamed; the safe
+ * default for `A2AServer` is now {@link notConfiguredExecutor}, so using
+ * this alias still requires an explicit opt-in.
  */
 export declare const defaultExecutor: TaskExecutor;
 //# sourceMappingURL=server.d.ts.map

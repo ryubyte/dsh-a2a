@@ -63,7 +63,7 @@ export { A2AClient } from './client.js';
 export * from './protocol.js';
 export * from './errors.js';
 export { fetchAgentCard } from './card.js';
-export { A2AServer, TaskStore, defaultExecutor, defaultSkills } from './server.js';
+export { A2AServer, TaskStore, defaultExecutor, notConfiguredExecutor, shellExecutor, defaultSkills } from './server.js';
 export { registerAgentTools } from './outbound.js';
 export { DashboardRegistry, getSharedRegistry } from './dashboard.js';
 export type {

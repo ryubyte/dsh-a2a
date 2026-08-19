@@ -12,7 +12,7 @@ import { A2AClient } from '../src/client.js';
 import { fetchAgentCard, pickInterface } from '../src/card.js';
 import { TaskState, A2A_METHODS } from '../src/protocol.js';
 import { A2AError } from '../src/errors.js';
-import { A2AServer, TaskStore, defaultExecutor } from '../src/server.js';
+import { A2AServer, TaskStore, defaultExecutor, notConfiguredExecutor, shellExecutor } from '../src/server.js';
 import { registerAgentTools } from '../src/outbound.js';
 import { apply } from '../src/index.js';
 
@@ -228,8 +228,8 @@ test('plugin apply in client mode registers tools when tools service exists', as
   assert.equal(tools.defs.length, 0);
 });
 
-test('default executor runs a shell command', async () => {
-  const res = await defaultExecutor({
+test('shell executor runs a shell command (explicit opt-in)', async () => {
+  const res = await shellExecutor({
     message: { messageId: 'm', role: 'ROLE_USER', parts: [{ text: 'echo shell-ok' }] },
     taskId: 't',
     contextId: 'c',
@@ -237,6 +237,45 @@ test('default executor runs a shell command', async () => {
   });
   assert.ok(res.parts?.[0] && 'text' in res.parts[0]);
   assert.match(res.parts[0].text ?? '', /shell-ok/);
+  // defaultExecutor is a backwards-compatible alias of shellExecutor.
+  assert.equal(defaultExecutor, shellExecutor);
+});
+
+test('A2AServer without execute refuses instead of shelling out', async () => {
+  const server = new A2AServer({
+    baseUrl: 'http://127.0.0.1:3080',
+    agentName: 'T',
+    agentDescription: 'T',
+    agentVersion: '1.0.0',
+  });
+  const res = await server.handle(
+    { method: 'POST', url: '/a2a' },
+    JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'SendMessage',
+      params: {
+        message: { role: 'ROLE_USER', parts: [{ text: 'echo should-not-run' }] },
+      },
+    }),
+  );
+  const json = JSON.parse(res.body);
+  assert.equal(json.result.task.status.state, TaskState.COMPLETED);
+  const text = json.result.task.status.message.parts[0].text;
+  assert.ok(text.includes('no executor configured'), `refused: ${text}`);
+});
+
+test('notConfiguredExecutor never executes shell', async () => {
+  const res = await notConfiguredExecutor({
+    message: { messageId: 'm', role: 'ROLE_USER', parts: [{ text: 'echo pwned' }] },
+    taskId: 't',
+    contextId: 'c',
+    signal: new AbortController().signal,
+  });
+  const text = res.parts?.[0] && 'text' in res.parts[0] ? res.parts[0].text : '';
+  // Refuses, and the reply is a refusal notice — not a shell transcript.
+  assert.ok(text.includes('no executor configured'));
+  assert.ok(!text.includes('pwned\n'), 'must not have produced command output');
 });
 
 test('A2A_METHODS constant reflects v1.0 names', () => {
