@@ -92,6 +92,25 @@ export async function registerAgentTools(
   const skills = card.skills ?? [];
   options.onReady?.({ connectionId, card });
 
+  // A2A scopes a conversation by `contextId`. To give the LOCAL caller a
+  // continuous conversation with this remote agent (cross-call memory), we map
+  // the calling DSH agent's session id → a stable contextId, shared across all
+  // of this connection's skill-tools (one remote conversation per local agent).
+  // Calls with no agent context (e.g. a non-agent caller) share one fallback
+  // contextId so they still form a single stable conversation rather than a new
+  // remote session per call. Reused for the connection's lifetime.
+  const contextByAgent = new Map<string, string>();
+  const fallbackContextKey = '\0fallback';
+  const contextFor = (agentId: string | undefined): string => {
+    const key = agentId ?? fallbackContextKey;
+    let ctxId = contextByAgent.get(key);
+    if (ctxId === undefined) {
+      ctxId = `a2a-out-${crypto.randomUUID()}`;
+      contextByAgent.set(key, ctxId);
+    }
+    return ctxId;
+  };
+
   let disposers: RegisteredTool[] = [];
   if (options.mapSkills === false || skills.length === 0) {
     // Fall back to a single generic tool for the whole agent.
@@ -100,13 +119,13 @@ export async function registerAgentTools(
       id: 'agent',
       name: options.name,
       description: `${card.name}: ${card.description} (no skills advertised)`,
-    }));
+    }, contextFor));
     if (dispose) disposers = [{ name, dispose }];
   } else {
     const out: RegisteredTool[] = [];
     for (const skill of skills) {
       const name = skillToToolName(options.name, skill);
-      const dispose = tools.register?.(makeTool(name, client, skill));
+      const dispose = tools.register?.(makeTool(name, client, skill, contextFor));
       if (dispose) out.push({ name, dispose });
     }
     disposers = out;
@@ -122,7 +141,12 @@ export async function registerAgentTools(
   }));
 }
 
-function makeTool(name: string, client: A2AClient, skill: Pick<AgentSkill, 'id' | 'name' | 'description' | 'examples'>) {
+function makeTool(
+  name: string,
+  client: A2AClient,
+  skill: Pick<AgentSkill, 'id' | 'name' | 'description' | 'examples'>,
+  contextFor: (agentId: string | undefined) => string,
+) {
   const description = [
     skill.description,
     ...(skill.examples?.length ? [`Examples: ${skill.examples.join(' | ')}`] : []),
@@ -147,10 +171,13 @@ function makeTool(name: string, client: A2AClient, skill: Pick<AgentSkill, 'id' 
         { type: 'text', text: String(value) },
       ],
     },
-    async execute(args: { prompt: string }, exec: { signal?: AbortSignal }): Promise<string> {
+    async execute(args: { prompt: string }, exec: { signal?: AbortSignal; agent?: { id?: string } }): Promise<string> {
+      // Reuse one contextId per calling local agent so multi-turn tool use is a
+      // continuous conversation with the remote agent (cross-call memory).
       const message: Message = {
         messageId: crypto.randomUUID(),
         role: Role.USER,
+        contextId: contextFor(exec.agent?.id),
         parts: [{ text: args.prompt }],
       };
       try {

@@ -90,11 +90,17 @@ export interface DashboardControlHooks {
     /** Reconnect is not meaningful for an inbound peer — rejects unless overridden. */
     reconnectPeer?: (peerId: string) => Promise<ControlResult>;
     /** Runtime-add an outbound agent (visual config). Returns the new connection id. */
-    addAgent?: (name: string, agentCardUrl: string) => Promise<ControlResult>;
+    addAgent?: (name: string, agentCardUrl: string, opts?: {
+        bearerToken?: string;
+    }) => Promise<ControlResult>;
     /** Discover an Agent Card without connecting (for the import preview). */
-    discoverAgent?: (agentCardUrl: string) => Promise<ControlResult>;
+    discoverAgent?: (agentCardUrl: string, opts?: {
+        bearerToken?: string;
+    }) => Promise<ControlResult>;
     /** Enable/disable the inbound A2A server (serve routes) at runtime. */
     setServerEnabled?: (enabled: boolean) => Promise<ControlResult>;
+    /** Set or clear the inbound server's shared bearer token at runtime (persisted). */
+    setServerAuthToken?: (token?: string) => Promise<ControlResult>;
     /** Read current inbound server status (for the serve panel). */
     serverStatus?: () => ControlResult;
     /** Runtime-remove an outbound agent by its connection id. */

@@ -23,10 +23,13 @@
 
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { registerAgentTools } from './outbound.js';
 import { fetchAgentCard, pickInterface } from './card.js';
-import { A2AServer, type ServerOptions } from './server.js';
+import { A2AServer, type ServerOptions, createDshAgentExecutor, type AgentRegistryLike } from './server.js';
 import { TaskStore } from './server.js';
+import type { AgentPresetsLike } from './server.js';
 import { getSharedRegistry } from './dashboard.js';
 import {
   loadConfig as loadPersistedA2A,
@@ -65,7 +68,8 @@ export { A2AClient } from './client.js';
 export * from './protocol.js';
 export * from './errors.js';
 export { fetchAgentCard } from './card.js';
-export { A2AServer, TaskStore, defaultExecutor, notConfiguredExecutor, shellExecutor, defaultSkills } from './server.js';
+export { A2AServer, TaskStore, defaultExecutor, notConfiguredExecutor, shellExecutor, defaultSkills, createDshAgentExecutor } from './server.js';
+export type { AgentRegistryLike, AgentPresetsLike, DshAgentExecutorOptions } from './server.js';
 export { registerAgentTools } from './outbound.js';
 export { DashboardRegistry, getSharedRegistry } from './dashboard.js';
 export type {
@@ -93,12 +97,46 @@ export interface WebServerService {
   }): () => void;
 }
 
+/**
+ * Structural slice of `ctx.agentDefaultModel` (owned by
+ * `@deepseek-ai/dsh-agent-default-model`). It holds the deployment's default
+ * `{ provider, model }` (layered with the user's Settings choice). Reading it
+ * to seed a newly-created agent's model is the creating entry point's job — a
+ * fresh session has no model selection, and DSH's persona system prompt fails
+ * assembly on an empty `{{model}}` variable otherwise.
+ */
+export interface AgentDefaultModelService {
+  currentSelection(): { provider?: string; model?: string; reasoningEffort?: string };
+}
+
+/**
+ * Structural slice of `ctx.sessionTitle` (owned by `@deepseek-ai/dsh-session-title`).
+ * `rename` accepts an explicit user title and pins it. We name inbound sessions
+ * ourselves because their prompts carry a `plugin` source, which the title
+ * service's automatic first-prompt naming deliberately ignores (human messages
+ * only) — so without this they fall back to the cwd basename.
+ */
+export interface SessionTitleService {
+  rename(session: unknown, title: string): unknown;
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** Provided by @deepseek-ai/dsh-host-webserver. */
     webServer: WebServerService;
+    /** Provided by @deepseek-ai/dsh-agent-default-model (optional). */
+    agentDefaultModel?: AgentDefaultModelService;
+    /** Provided by @deepseek-ai/dsh-session-title (optional). */
+    sessionTitle?: SessionTitleService;
     /** Provided by @deepseek-ai/dsh-tools. */
     tools: { register(def: unknown): () => void };
+    /**
+     * Provided by @deepseek-ai/dsh-agent (the agent registry). Present whenever
+     * that layer is composed, but `create()` only succeeds once an agent-loop
+     * plugin has registered its factory — so server mode probes readiness
+     * before enabling {@link createDshAgentExecutor}, and never hard-injects it.
+     */
+    agents?: AgentRegistryLike;
   }
 }
 
@@ -367,19 +405,20 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
           dashboard.removeAgent(connectionId);
           return { ok: true, message: `connection ${connectionId} reconnected as ${newId}` };
         },
-        addAgent: async (name, agentCardUrl) => {
-          const cid = await connect(name, agentCardUrl, true);
+        addAgent: async (name, agentCardUrl, opts) => {
+          const bearerToken = opts?.bearerToken;
+          const cid = await connect(name, agentCardUrl, true, { bearerToken });
           if (!cid) return { ok: false, message: `failed to connect to ${agentCardUrl}` };
-          // Persist: add to a2a.json so it survives restart.
-          initialAgents.push({ name, agentCardUrl, configured: true, enabled: true });
+          // Persist: add to a2a.json so it survives restart (token included).
+          initialAgents.push({ name, agentCardUrl, configured: true, enabled: true, bearerToken });
           persistAgents();
           return { ok: true, message: `agent "${name}" connected as ${cid} (saved to ${configPath})` };
         },
-        discoverAgent: async (agentCardUrl) => {
+        discoverAgent: async (agentCardUrl, opts) => {
           try {
             const card = await fetchAgentCard(agentCardUrl, {
               timeoutMs: mergedConfig.timeoutMs ?? 8000,
-              bearerToken: mergedConfig.bearerToken,
+              bearerToken: opts?.bearerToken ?? mergedConfig.bearerToken,
             });
             const iface = pickInterface(card);
             return {
@@ -475,6 +514,59 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
           `http://${webServer.host === '0.0.0.0' ? '127.0.0.1' : webServer.host}:${webServer.port}`;
         const endpointPath = mergedConfig.endpointPath ?? DEFAULT_ENDPOINT;
 
+        // ── executor precedence ───────────────────────────────────────────────
+        //   1. explicit `execute` (config injection)          → use it
+        //   2. no explicit executor & the agent loop is ready → dshAgentExecutor:
+        //      inbound message → a fresh, workspace-bound DSH agent session →
+        //      reply. "Ready" means the agent-loop factory is registered, not
+        //      merely that `ctx.agents` exists — a bare dsh-base profile has the
+        //      registry but `create()` would reject. We probe via the reflection
+        //      layer (no inject requirement) so a composition without the agent
+        //      layer simply falls through.
+        //   3. otherwise                                       → A2AServer's
+        //      default notConfiguredExecutor (refuses + points at `execute`).
+        let execute = mergedConfig.execute;
+        let executorKind: 'custom' | 'dsh-agent' | 'none' = execute ? 'custom' : 'none';
+        let disposeExecutor: (() => Promise<void>) | undefined;
+        if (!execute) {
+          const agents = probeAgentRegistry(ctx);
+          if (agents) {
+            // Dedicated cwd for inbound sessions: a subdir of the profile dir,
+            // NOT the profile root — so per-context sessions don't pollute the
+            // profile-root session group with a burst of `.a2a`-named rows. DSH
+            // requires an absolute cwd and freezes it into the session header at
+            // creation. Inbound sessions land in the "Ungrouped" bucket of the
+            // session list; they are named `A2A: <summary>` so they're still
+            // identifiable there.
+            const inboundCwd = inboundSessionCwd(configPath);
+            // Seed the model per task from the deployment default selection
+            // (ctx.agentDefaultModel) — a fresh session has no model selection,
+            // and the persona system prompt fails assembly on an empty
+            // `{{model}}` without it. Resolving per task means a Settings model
+            // switch is picked up by the next inbound task.
+            const dshExec = createDshAgentExecutor(agents, {
+              cwd: inboundCwd,
+              plugin: 'a2a',
+              agentPresets: probeAgentPresets(ctx),
+              resolveAgentOptions: () => {
+                const sel = probeAgentDefaultModel(ctx)?.currentSelection();
+                if (!sel?.model && !sel?.provider) return undefined;
+                return { provider: sel.provider, model: sel.model };
+              },
+              onSessionOpened: ({ session, firstPrompt }) => {
+                // Name the session "A2A: <first-prompt summary>" — its prompts
+                // carry a plugin source, which DSH's automatic titling skips, so
+                // without this it would fall back to the cwd basename.
+                probeSessionTitle(ctx)?.rename(session, `A2A: ${summarize(firstPrompt)}`);
+              },
+            });
+            execute = dshExec;
+            disposeExecutor = () => dshExec.disposeAll();
+            executorKind = 'dsh-agent';
+            logger?.info?.(`[a2a] server executor: DSH agent session per A2A context (cwd ${inboundCwd})`);
+          }
+        }
+
         const server = new A2AServer(
           {
             baseUrl,
@@ -483,7 +575,7 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
             agentVersion: mergedConfig.agentVersion ?? '0.1.0',
             skills: mergedConfig.skills,
             endpointPath,
-            execute: mergedConfig.execute,
+            execute,
             authToken: mergedConfig.authToken,
             onInbound: (facts) => {
               const peerId = dashboard.touchInbound(
@@ -583,6 +675,12 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
           agentCardUrl: `${baseUrl}/.well-known/agent-card.json`,
           skills: (server.card.skills ?? []).map((s) => ({ id: s.id, name: s.name, description: s.description })),
           customExecutor: Boolean(mergedConfig.execute),
+          // How inbound tasks are handled: a config-injected executor, this
+          // harness's own agent session, or none (refuses until configured).
+          executor: executorKind,
+          // Whether the inbound endpoint is token-gated. Never expose the token
+          // value itself — only whether one is set.
+          authConfigured: server.authConfigured,
         });
         dashboard.setHooks({
           setServerEnabled: async (enable) => {
@@ -598,6 +696,19 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
             logger?.info?.('[a2a] A2A server disabled');
             return { ok: true, message: 'A2A server disabled' };
           },
+          setServerAuthToken: async (token) => {
+            server.setAuthToken(token);
+            // Persist to a2a.json (server.authToken) so the gate survives restart.
+            const next: PersistedA2AConfig = loadPersistedA2A();
+            next.server = { ...(next.server ?? {}), authToken: token && token.length > 0 ? token : undefined };
+            const res = savePersistedA2A(next);
+            if (!res.ok) {
+              logger?.error?.(`[a2a] failed to persist authToken to ${res.path}: ${res.message}`);
+              return { ok: false, message: `applied in-memory but failed to save: ${res.message}` };
+            }
+            logger?.info?.(`[a2a] inbound authToken ${token ? 'set' : 'cleared'} (saved to ${res.path})`);
+            return { ok: true, message: token ? '已设置入站鉴权 token' : '已清除入站鉴权 token' };
+          },
           serverStatus: () => ({
             ok: true,
             message: JSON.stringify({ enabled, ...serverCard() }),
@@ -606,6 +717,8 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
 
         return () => {
           unregisterRoutes();
+          // Dispose every live per-context inbound session on unload/teardown.
+          void disposeExecutor?.().catch((err) => logger?.error?.(`[a2a] executor dispose failed: ${(err as Error).message}`));
         };
       }, 'a2a: server routes');
     });
@@ -613,6 +726,95 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
 
   // ── control hooks for outbound reconnect/close ────────────────────────────
   // Wired per-instance inside the client-mode effect above.
+}
+
+/**
+ * Probe for a usable agent registry WITHOUT taking an inject dependency on it.
+ *
+ * `ctx.agents` (the registry) can be present while `create()` still rejects —
+ * that happens on a bare dsh-base profile that has the agent layer but no
+ * agent-loop plugin to register the creation factory. We can't cheaply tell
+ * "factory registered" apart from "registry present" without attempting a
+ * create, so this returns the registry when it's structurally usable and lets
+ * {@link createDshAgentExecutor} degrade to a readable error if a later
+ * `create()` rejects.
+ */
+function probeAgentRegistry(ctx: Context): AgentRegistryLike | undefined {
+  return probeService(ctx, 'agents', 'create') as AgentRegistryLike | undefined;
+}
+
+/**
+ * Probe for the agent-preset roster service (`ctx.agentPresets`, owned by
+ * `@deepseek-ai/dsh-agent-presets`) without an inject dependency. When the
+ * deployment composes presets (`dsh-web-app` mounts the roster with a
+ * `default: standard`), inbound sessions must be composed from the same
+ * preset or they publish against the empty global layer — tools, prompt
+ * sections, and skills all absent. Absent rosters keep legacy behavior.
+ */
+function probeAgentPresets(ctx: Context): AgentPresetsLike | undefined {
+  return probeService(ctx, 'agentPresets', 'resolve') as AgentPresetsLike | undefined;
+}
+
+/**
+ * Probe for the deployment default-model service without an inject dependency.
+ * Returns undefined when the service is absent, so the executor simply creates
+ * the agent without a seeded selection — fine for compositions that seed the
+ * model another way.
+ */
+function probeAgentDefaultModel(ctx: Context): AgentDefaultModelService | undefined {
+  const svc = probeService(ctx, 'agentDefaultModel', 'currentSelection');
+  return svc as AgentDefaultModelService | undefined;
+}
+
+/** Probe `ctx.sessionTitle` (optional). Used to name inbound sessions. */
+function probeSessionTitle(ctx: Context): SessionTitleService | undefined {
+  return probeService(ctx, 'sessionTitle', 'rename') as SessionTitleService | undefined;
+}
+
+/**
+ * Read a strict service off the reflection layer and confirm it exposes the
+ * named method, without taking an inject dependency. Returns undefined when the
+ * service is absent, its fiber inactive, or the method missing.
+ */
+function probeService(ctx: Context, name: string, method: string): unknown {
+  try {
+    const reflect = (ctx as unknown as { reflect?: { get(n: string, strict?: boolean): unknown } }).reflect;
+    const svc = reflect?.get(name, true);
+    if (svc && typeof (svc as Record<string, unknown>)[method] === 'function') return svc;
+  } catch {
+    // reflection unavailable or service resolution threw — treat as absent.
+  }
+  return undefined;
+}
+
+/**
+ * One-line title summary from a prompt: first line, whitespace-collapsed, cut
+ * to a display-friendly length on a word boundary when possible.
+ */
+function summarize(prompt: string, maxChars = 40): string {
+  const text = prompt.replace(/\s+/g, ' ').trim();
+  if (text.length <= maxChars) return text || '(empty)';
+  const cut = text.slice(0, maxChars);
+  const sp = cut.lastIndexOf(' ');
+  return `${(sp > maxChars * 0.6 ? cut.slice(0, sp) : cut).trimEnd()}…`;
+}
+
+/**
+ * Absolute cwd for inbound per-context sessions: a `.a2a-sessions` subdir of
+ * the profile directory (the dir holding `a2a.json`), kept separate from the
+ * profile root so inbound sessions don't crowd the user's interactive
+ * conversations there. They surface in the session list's "Ungrouped" bucket,
+ * named `A2A: <summary>`. Created if missing (persistence writes under it);
+ * falls back to cwd on any failure.
+ */
+function inboundSessionCwd(configPath: string): string {
+  try {
+    const dir = join(dirname(configPath), '.a2a-sessions');
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  } catch {
+    return process.cwd();
+  }
 }
 
 /** Drain the request body from a Node IncomingMessage. */

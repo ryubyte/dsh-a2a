@@ -17,14 +17,15 @@
 - **单次调用**：`SendMessage`、`GetTask`、`ListTasks`、`CancelTask`、`GetExtendedAgentCard`
 - **流式**：`SendStreamingMessage`（SSE）/ `SubscribeToTask`，含 `TaskStatusUpdateEvent` + `TaskArtifactUpdateEvent`
 - **任务生命周期**：`SUBMITTED → WORKING → COMPLETED / FAILED / CANCELED / REJECTED / INPUT_REQUIRED / AUTH_REQUIRED`
+- **鉴权**：出站按 Agent 配置 Bearer Token（`Authorization: Bearer …`）；入站可选共享 Bearer Token 保护端点——配置后 AgentCard 声明 `bearerAuth` 安全方案，未带/错误 token 的请求返回 401（单次调用与 SSE 流均生效）
 - **类型**：`Task`、`Message`、`Part`（text/raw/url/data）、`Artifact`、`AgentCard`、安全方案、扩展
 
 ### 连接面板（设置 → A2A 连接）
 
-- **出站 Agent**：列出本 DSH 连接的远程 Agent（名称、连接状态、AgentCard URL、技能/工具数、最近活动），每个 Agent 支持 **重连 / 启用 / 禁用 / 删除**。
+- **出站 Agent**：列出本 DSH 连接的远程 Agent（名称、连接状态、AgentCard URL、技能/工具数、最近活动），每个 Agent 支持 **重连 / 启用 / 禁用 / 删除**。添加 Agent 时可填 **Bearer Token**（可选），导入与后续 JSON-RPC 调用都会带上 `Authorization: Bearer …`，并随 Agent 一起持久化到 `a2a.json`。
 - **入站连接**：谁在调用本 DSH（来源、地址、首/末次连接、任务数、流式标记），支持关闭。
-- **A2A 服务**：入站服务的运行状态，上线 / 下线开关，端点与技能一览。
-- 面板每 3 秒自动刷新；`/a2a/api` 提供 JSON 快照与控制接口，受 loopback/same-origin 保护。
+- **A2A 服务**：入站服务的运行状态，上线 / 下线开关，端点与技能一览；并显示 **入站任务由谁执行**（自定义 executor / 本 DSH agent 会话 / 未配置），以及 **入站鉴权** 开关——可设置或清除保护入站端点的共享 Bearer Token（持久化到 `a2a.json`，实时生效）。
+- 面板每 3 秒自动刷新；`/a2a/api` 提供 JSON 快照与控制接口，受 loopback/same-origin 保护（token 值不会通过快照回传，只暴露「是否已配置」）。
 
 ### 运行时配置（a2a.json）
 
@@ -96,6 +97,8 @@
 
 连接成功后，对方 Agent 的 skills 会作为模型工具出现：`a2a__<name>__<skill>`。
 
+同一个本地 agent 会话对某远程 Agent 的多次工具调用会复用同一个 A2A `contextId`，因此在远端落到同一会话、具备跨轮记忆；不同本地会话相互隔离，各自独立对话。
+
 ### 2. 对外提供 A2A 服务（入站）
 
 同样在 `a2a.json` 里开启 server 模式：
@@ -118,7 +121,21 @@
 
 之后其他 A2A 客户端通过 `http://<host>:<port>/.well-known/agent-card.json` 发现本 DSH，通过 `/a2a` 端点调用。
 
-> 注：未注入 executor 时，入站任务会返回「no executor configured — inject one」，**不会执行任何命令**。本机自测可显式传入 `shellExecutor`（把 prompt 当作 shell 命令执行，仅限可信客户端），生产请注入受限 executor 并置于 TLS 反向代理之后。
+#### 入站任务由谁执行（executor 优先级）
+
+server 模式收到任务后，按以下优先级选择 executor：
+
+1. **显式 `execute`**（编程接入时注入）—— 用你的。
+2. **本 DSH 的 agent 会话**（默认，当 agent 循环就位时）—— 按 A2A `contextId` **一个对话一个会话**：某 `contextId` 首个任务 `ctx.agents.create()` 建会话（后续同 `contextId` 复用同一会话，历史累积；进程重启后按需 `resume`），把消息作为 `next-turn` 唤醒项发给它，等 `whenIdle()`，取最新 assistant 回复作为 A2A artifact。同一 `contextId` 的并发任务按序串行，不同 `contextId` 并行。会话不逐任务释放（否则无法累积上下文），插件卸载/下线时统一释放。开 server 即可「接收并处理任务」，无需写代码。
+3. **`notConfiguredExecutor`**（兜底）—— 既没注入 `execute`、composition 里又没有可用 agent 循环（如仅 dsh-base 的最小 profile）时，返回「no executor configured — inject one」，**不执行任何命令**。
+
+> 关于「就位」：`ctx.agents`（registry）存在 ≠ 能创建 agent。`create()` 需要 agent-loop 插件注册的 factory；缺 factory 时 `create()` 会 reject，此时 DSH agent executor 会把它作为可读错误返回（而非抛出）。因此最小 profile 仍需显式注入 executor。
+>
+> 会话与工作区：DSH 会话在创建时把 `cwd` 校验为绝对路径并冻结进会话头。入站会话用**专用目录** `<profile>/.a2a-sessions` 作为 cwd（与 profile 根分开，避免入站会话挤占你的交互会话）。它们出现在会话列表的「未分组」里，并按首条消息摘要命名为 `A2A: <摘要>`（入站消息带 plugin 来源，DSH 的自动标题只认 human 消息，故显式命名）。命名是装饰性的，失败只记日志、绝不影响任务。
+>
+> 取消：`CancelTask` 会 abort 正在运行任务的 executor 信号，真正中止 agent 回合（不只是改任务状态）。
+>
+> 本机自测也可显式传入 `shellExecutor`（把 prompt 当作 shell 命令执行，仅限可信客户端）；生产请置于 TLS 反向代理之后并按需配 `authToken`。
 
 ### 3. 编程接入
 
@@ -183,9 +200,9 @@ const server = new A2AServer({
 ## 已知限制
 
 - 面板 API（`/a2a/api`）只监听 loopback / same-origin，供运维可见性使用，不承载机密。
-- 入站服务默认**拒绝执行**（未注入 executor 即返回「no executor configured」）；仅当显式传入 `shellExecutor`（本地自测）或自定义 executor 时才执行任务。切勿向不受信网络暴露 server 模式。
+- 入站服务的执行策略见[入站任务由谁执行](#入站任务由谁执行executor-优先级)：有 agent 循环时默认由本 DSH 会话执行（绑定工作目录 cwd），否则（且未注入 executor）**拒绝执行**并返回「no executor configured」。`shellExecutor` 仅限本地自测。无论哪种 executor，都切勿向不受信网络暴露 server 模式（默认无鉴权，除非配置 `authToken`）。
 - A2A 规范要求生产 `AgentInterface.url` 使用 HTTPS；DSH webServer 默认仅绑 loopback，对外暴露前需自行加 TLS。
-- 出站的 bearer token 明文存于 `a2a.json`，请自行保证该文件权限。
+- Bearer token（出站按 Agent 配置的、入站保护端点的 `authToken`）均明文存于 `a2a.json`，请自行保证该文件权限。
 
 ## 开发
 
