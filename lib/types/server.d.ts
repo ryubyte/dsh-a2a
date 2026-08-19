@@ -135,6 +135,7 @@ export declare class A2AServer {
         };
     }, body: string, onEvent: (frame: string) => void): Promise<{
         status: number;
+        headers?: Record<string, string>;
     }>;
     private ensureTask;
     private waitTerminal;

@@ -395,3 +395,25 @@ test('A2AServer without authToken does not require auth', async () => {
   const card = JSON.parse((await server.handle({ method: 'GET', url: '/.well-known/agent-card.json' })).body);
   assert.equal(card.securitySchemes, undefined);
 });
+
+test('A2AServer authToken protects SSE streaming too', async () => {
+  const server = new A2AServer({
+    baseUrl: 'http://127.0.0.1:3080',
+    agentName: 'T',
+    agentVersion: '1.0.0',
+    execute: async ({ signal }) => {
+      await new Promise((r) => signal?.addEventListener('abort', r, { once: true }));
+      return { messageId: 'm', role: 'ROLE_AGENT', parts: [{ text: 'done' }] };
+    },
+    authToken: 'sse-secret',
+  });
+  let frames = '';
+  const noAuth = await server.handleStream(
+    { method: 'POST', url: '/a2a', headers: { accept: 'text/event-stream' } },
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'SendStreamingMessage', params: { message: { role: 'ROLE_USER', parts: [{ text: 'x' }] } } }),
+    (f) => (frames += f),
+  );
+  assert.equal(noAuth.status, 401);
+  assert.ok(noAuth.headers?.['WWW-Authenticate'] === 'Bearer');
+  assert.equal(frames, '', 'must not emit SSE frames when unauthorized');
+});

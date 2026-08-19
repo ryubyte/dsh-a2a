@@ -294,15 +294,16 @@ export class A2AServer {
     }
     return { status: 404, contentType: 'text/plain', body: 'Not Found' };
   }
-  async handleStream(req: { method?: string; url?: string; headers?: Record<string, string>; socket?: { remoteAddress?: string; remotePort?: number } }, body: string, onEvent: (frame: string) => void): Promise<{ status: number }> {
+  async handleStream(req: { method?: string; url?: string; headers?: Record<string, string>; socket?: { remoteAddress?: string; remotePort?: number } }, body: string, onEvent: (frame: string) => void): Promise<{ status: number; headers?: Record<string, string> }> {
     const path = (req.url ?? '').split('?')[0];
     if (req.method !== 'POST' || path !== this.endpointPath) {
       onEvent(`event: error\ndata: ${JSON.stringify({ code: 404, message: 'Not Found' })}\n\n`);
       return { status: 200 };
     }
     if (!this.authorized(req)) {
-      onEvent(`event: error\ndata: ${JSON.stringify({ code: -32001, message: 'Unauthorized' })}\n\n`);
-      return { status: 401 };
+      // Do not emit on the SSE stream — the caller flips the HTTP status to
+      // 401 + WWW-Authenticate.  (Spec §7.4: fail closed on missing tokens.)
+      return { status: 401, headers: { 'WWW-Authenticate': 'Bearer' } };
     }
     let payload: unknown;
     try {

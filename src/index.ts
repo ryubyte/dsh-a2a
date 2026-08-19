@@ -547,12 +547,12 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
                 }
                 const body = await readBody(req);
                 if (isStream) {
-                  res.writeHead(200, {
-                    'content-type': 'text/event-stream',
-                    'cache-control': 'no-cache',
-                    connection: 'keep-alive',
-                  });
-                  await server.handleStream(toServerReq(req), body, (frame) => res.write(frame));
+                  const stream = await server.handleStream(toServerReq(req), body, (frame) => res.write(frame));
+                  if (stream.status !== 200) {
+                    res.writeHead(stream.status, { 'content-type': 'text/plain', ...(stream.headers ?? {}) });
+                    res.end('Unauthorized');
+                    return;
+                  }
                   res.end();
                   return;
                 }
