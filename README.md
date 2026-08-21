@@ -29,7 +29,7 @@
 
 ### 运行时配置（a2a.json）
 
-配置以 **`a2a.json`（按 profile 存放，UI 可编辑）为准**，无需改动组合配置即可管理 Agent。文件定位不依赖启动目录：插件解析进程命令行里的 `--profile <name>`，读写 `~/.dsh/profiles/<name>/a2a.json`。
+配置以 **`a2a.json`（按 profile 存放，UI 可编辑）为准**，无需改动组合配置即可管理 Agent。文件定位不依赖启动目录：插件解析进程命令行里的 `--profile <name>`（`dsh web` 别名同样识别为 `web` profile），读写 `~/.dsh/profiles/<name>/a2a.json`。
 
 ## 截图
 
@@ -192,7 +192,7 @@ const server = new A2AServer({
 ## 工作原理
 
 - 插件在 `ctx.inject(...)` / `ctx.effect(...)` 内读取 `ctx.webServer` 与 `ctx.tools`（原生 Cordis 模式，与 `dsh-client-hmr` 等 bundle 一致）；缺少任一半的组合只会闲置该半区，不会崩溃。
-- **server 模式 `baseUrl` 可选**：省略时 AgentCard 公布 webServer 的真实监听地址，临时端口不会发布过期 URL；仅在反向代理前置时才需显式设置。
+- **server 模式 `baseUrl` 可选**：省略时 AgentCard 公布 webServer 的真实监听地址，临时端口不会发布过期 URL。绑定 `127.0.0.1` 时公布该回环地址；绑定 `0.0.0.0` 时自动推导本机 LAN 地址（供远程 Agent 可达），无法推导才退回 `127.0.0.1`。仅在反向代理前置时才需显式设置。
 - 客户端模式的连接生命周期钩子（`onReady` / `onDispose`）上报到**进程级共享注册表**；多个实例（client + server）共用，`/a2a/api` 每个进程注册一次。
 - 所有注册 fiber 作用域化：插件停止 / 更新时由 Cordis 自动清理。
 - 禁用（`enabled:false`）的 Agent 显示为灰化占位卡，**不自动连接**，直到重新启用。

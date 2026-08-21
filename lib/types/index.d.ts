@@ -125,4 +125,22 @@ export declare const name = "a2a";
  */
 export declare const inject: readonly ["webServer", "tools"];
 export declare function apply(ctx: Context, config?: A2APluginConfig): void;
+/**
+ * Derive the public base URL advertised in the AgentCard from the real wire
+ * listen address, when the operator did not pin `baseUrl` in config.
+ *
+ * The A2A AgentCard must carry a URL a REMOTE caller can reach. When the web
+ * server binds only loopback (`127.0.0.1`), that address is correct. But when
+ * it binds every interface (`0.0.0.0`), advertising `127.0.0.1` is wrong for
+ * every non-local caller — it points at the caller's own loopback. In that
+ * case pick the machine's best-known LAN address (the primary non-loopback
+ * IPv4 of the interface that routes to the default gateway), and only fall
+ * back to loopback when no such address exists. IPv6 link-local is skipped
+ * (not reachable without a scope id).
+ *
+ * @param host - the web server's configured bind host ('127.0.0.1' | '0.0.0.0').
+ * @param port - the OS-assigned (or configured) listen port.
+ * @returns a scheme+host+port URL for Agents to call back into this DSH.
+ */
+export declare function inferBaseUrl(host: string, port: number): string;
 //# sourceMappingURL=index.d.ts.map

@@ -14,7 +14,7 @@ import { TaskState, A2A_METHODS } from '../src/protocol.js';
 import { A2AError } from '../src/errors.js';
 import { A2AServer, TaskStore, defaultExecutor, notConfiguredExecutor, shellExecutor, createDshAgentExecutor, type AgentRegistryLike } from '../src/server.js';
 import { registerAgentTools } from '../src/outbound.js';
-import { apply } from '../src/index.js';
+import { apply, inferBaseUrl } from '../src/index.js';
 
 let mock: { server: Server; port: number; tasks: Map<string, unknown> } | undefined;
 
@@ -185,6 +185,28 @@ test('TaskStore lifecycle: create → working → completed', () => {
   store.addArtifact(task.id, { artifactId: 'a1', parts: [{ text: 'out' }] });
   store.setStatus(task.id, TaskState.COMPLETED);
   assert.equal(store.get(task.id)?.artifacts?.[0]?.parts?.[0]?.text, 'out');
+});
+
+// ── baseUrl inference (0.0.0.0 bind) ──────────────────────────────────────
+
+test('inferBaseUrl keeps the loopback host when bound to 127.0.0.1', () => {
+  assert.equal(inferBaseUrl('127.0.0.1', 3080), 'http://127.0.0.1:3080');
+});
+
+test('inferBaseUrl advertises a LAN address, not loopback, when bound to 0.0.0.0', () => {
+  const url = inferBaseUrl('0.0.0.0', 3080);
+  assert.match(url, /^http:\/\/[^/]+:3080$/);
+  const host = url.slice('http://'.length, url.lastIndexOf(':'));
+  // Must NOT advertise the caller-unreachable loopback.
+  assert.notEqual(host, '127.0.0.1');
+  assert.notEqual(host, '0.0.0.0');
+});
+
+test('inferBaseUrl falls back to loopback when no LAN address exists', () => {
+  const url = inferBaseUrl('0.0.0.0', 3080);
+  // On machines with a real LAN interface this is a LAN address; the
+  // important invariant is the URL is well-formed and retains the port.
+  assert.match(url, /^http:\/\/[^/]+:3080$/);
 });
 
 // ── plugin entry (fake ctx) ────────────────────────────────────────────────

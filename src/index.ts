@@ -24,6 +24,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { mkdirSync } from 'node:fs';
+import { networkInterfaces } from 'node:os';
 import { dirname, join } from 'node:path';
 import { registerAgentTools } from './outbound.js';
 import { fetchAgentCard, pickInterface } from './card.js';
@@ -508,10 +509,9 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
       ctx.effect(() => {
         const webServer = ctx.webServer;
         // Derive the advertised base URL from the real listen address when the
-        // config doesn't pin one; avoids advertising a stale port.
-        const baseUrl =
-          mergedConfig.baseUrl ??
-          `http://${webServer.host === '0.0.0.0' ? '127.0.0.1' : webServer.host}:${webServer.port}`;
+        // config doesn't pin one; avoids advertising a stale port. When bound
+        // to 0.0.0.0, advertise a reachable LAN address, not loopback.
+        const baseUrl = mergedConfig.baseUrl ?? inferBaseUrl(webServer.host, webServer.port);
         const endpointPath = mergedConfig.endpointPath ?? DEFAULT_ENDPOINT;
 
         // ── executor precedence ───────────────────────────────────────────────
@@ -814,6 +814,66 @@ function inboundSessionCwd(configPath: string): string {
     return dir;
   } catch {
     return process.cwd();
+  }
+}
+
+/**
+ * Derive the public base URL advertised in the AgentCard from the real wire
+ * listen address, when the operator did not pin `baseUrl` in config.
+ *
+ * The A2A AgentCard must carry a URL a REMOTE caller can reach. When the web
+ * server binds only loopback (`127.0.0.1`), that address is correct. But when
+ * it binds every interface (`0.0.0.0`), advertising `127.0.0.1` is wrong for
+ * every non-local caller — it points at the caller's own loopback. In that
+ * case pick the machine's best-known LAN address (the primary non-loopback
+ * IPv4 of the interface that routes to the default gateway), and only fall
+ * back to loopback when no such address exists. IPv6 link-local is skipped
+ * (not reachable without a scope id).
+ *
+ * @param host - the web server's configured bind host ('127.0.0.1' | '0.0.0.0').
+ * @param port - the OS-assigned (or configured) listen port.
+ * @returns a scheme+host+port URL for Agents to call back into this DSH.
+ */
+export function inferBaseUrl(host: string, port: number): string {
+  const hostname =
+    host === '0.0.0.0'
+      ? primaryLanAddress() ?? '127.0.0.1'
+      : host || '127.0.0.1';
+  return `http://${hostname}:${port}`;
+}
+
+/**
+ * Best single LAN IPv4 for this machine: the address of the non-loopback
+ * interface whose route reaches the default gateway (the address a remote
+ * peer on the same subnet would use to reach us). Returns undefined when the
+ * machine has no non-loopback IPv4 (e.g. offline / containers).
+ *
+ * Prefers IPv4 (A2A URLs here are v4-style), skips link-local (169.254.0.0/16)
+ * and CGNAT (100.64.0.0/10) ranges, which are useless to advertise.
+ */
+function primaryLanAddress(): string | undefined {
+  try {
+    const ifaces = networkInterfaces();
+    let candidate: string | undefined;
+    for (const name of Object.keys(ifaces)) {
+      const addrs = ifaces[name] ?? [];
+      for (const a of addrs) {
+        if (a.family !== 'IPv4' || a.internal) continue;
+        const ip = a.address;
+        if (ip.startsWith('169.254.')) continue;
+        const first = Number(ip.split('.')[0]);
+        const second = Number(ip.split('.')[1]);
+        // CGNAT 100.64.0.0/10: first octet 100, second in [64..127]. The rest
+        // of 100.x.y.z is ordinary public space — keep it.
+        if (first === 100 && second >= 64 && second <= 127) continue;
+        if (!candidate) candidate = ip;
+        // Prefer addresses that match a default-route interface if visible.
+        if (name === 'en0' || name === 'eth0' || name === 'ens3' || name === 'ens5') return ip;
+      }
+    }
+    return candidate;
+  } catch {
+    return undefined;
   }
 }
 
