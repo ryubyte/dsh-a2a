@@ -69,6 +69,26 @@ export interface PersistedA2AConfig {
  */
 export declare function profileNameFromArgv(): string | undefined;
 /**
+ * Best-effort profile-name fallback for launchers that resolve a profile
+ * WITHOUT writing `--profile` back into argv.
+ *
+ * The dsh `web` subcommand is a hardcoded alias for `--profile web`: the
+ * launcher resolves the name internally and boots the web profile, but the
+ * process argv keeps the original tokens (`node …/dsh web [flags]`) — there
+ * is no `--profile` flag and no environment variable naming the profile. So
+ * when {@link profileNameFromArgv} finds nothing, check whether the first
+ * non-flag token after argv[0] is a known dsh subcommand alias:
+ *
+ *   - `web`            → boot profile `web` (alias, never followed by a name)
+ *   - `--profile <n>`  → already handled above
+ *   - anything else    → unknown/not a profile alias (e.g. `plugin`, which
+ *                        is a management mode, not a boot; returns undefined)
+ *
+ * Returns undefined when argv carries no recognizable alias, letting the
+ * caller fall through to the cwd-based resolution steps.
+ */
+export declare function profileNameFromDshAlias(): string | undefined;
+/**
  * Resolve the a2a.json path for the current process, without depending on
  * the launch directory. The plugin must work no matter where `dsh` was
  * started from (dsh does NOT chdir into the profile directory), so this
@@ -78,7 +98,9 @@ export declare function profileNameFromArgv(): string | undefined;
  *
  * Order:
  *   0. `$DSH_HOME/profiles/<argv --profile>/a2a.json` — the active profile
- *      as named on the command line (most authoritative; works from ANY cwd)
+ *      as named on the command line (most authoritative; works from ANY cwd).
+ *      Also matches the `dsh web` alias, which boots profile `web` without
+ *      writing `--profile` into argv.
  *   1. `cwd/a2a.json` — explicit when launched inside a profile dir
  *   2. outward from cwd: the nearest ancestor holding `a2a.json` — covers
  *      launching from e.g. a repo checkout whose parent chain includes the

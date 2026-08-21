@@ -32,7 +32,8 @@ It turns a DSH instance into a full A2A peer in both directions:
 Configuration is driven by **`a2a.json`** (per profile, UI-editable) — manage
 agents without touching the composition. The file is resolved from the active
 profile, not the launch directory: the plugin parses `--profile <name>` from
-the process command line and reads/writes `~/.dsh/profiles/<name>/a2a.json`.
+the process command line (the `dsh web` alias is recognized as the `web`
+profile too) and reads/writes `~/.dsh/profiles/<name>/a2a.json`.
 
 ## Screenshots
 
@@ -232,7 +233,10 @@ const server = new A2AServer({
   that half; nothing crashes.
 - **`baseUrl` is optional in server mode**: when omitted the AgentCard
   advertises the webserver's real listen address, so ephemeral ports never
-  publish a stale URL. Set it explicitly only when a reverse proxy fronts the
+  publish a stale URL. When bound to `127.0.0.1` that loopback address is
+  advertised; when bound to `0.0.0.0` the plugin derives the machine's LAN
+  address (reachable by remote Agents), falling back to `127.0.0.1` only when
+  none exists. Set it explicitly only when a reverse proxy fronts the
   instance.
 - Client-mode connection lifecycle hooks (`onReady` / `onDispose`) feed a
   **process-wide shared registry**; multiple instances (client + server) share

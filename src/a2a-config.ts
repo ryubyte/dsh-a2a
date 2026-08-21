@@ -86,6 +86,38 @@ export function profileNameFromArgv(): string | undefined {
 }
 
 /**
+ * Best-effort profile-name fallback for launchers that resolve a profile
+ * WITHOUT writing `--profile` back into argv.
+ *
+ * The dsh `web` subcommand is a hardcoded alias for `--profile web`: the
+ * launcher resolves the name internally and boots the web profile, but the
+ * process argv keeps the original tokens (`node …/dsh web [flags]`) — there
+ * is no `--profile` flag and no environment variable naming the profile. So
+ * when {@link profileNameFromArgv} finds nothing, check whether the first
+ * non-flag token after argv[0] is a known dsh subcommand alias:
+ *
+ *   - `web`            → boot profile `web` (alias, never followed by a name)
+ *   - `--profile <n>`  → already handled above
+ *   - anything else    → unknown/not a profile alias (e.g. `plugin`, which
+ *                        is a management mode, not a boot; returns undefined)
+ *
+ * Returns undefined when argv carries no recognizable alias, letting the
+ * caller fall through to the cwd-based resolution steps.
+ */
+export function profileNameFromDshAlias(): string | undefined {
+  const argv = process.argv ?? [];
+  // Only the `dsh <subcommand>` alias form counts: when a `--profile` flag is
+  // present, the flag parser owns the name and this fallback must yield.
+  if (argv.includes('--profile') || argv.some((a) => a.startsWith('--profile='))) return undefined;
+  // `dsh web …` puts the subcommand at argv[2] (argv[0]=node, argv[1]=script).
+  // The dsh launcher rejects parent flags before a subcommand, so the alias
+  // must be the FIRST user token — a later `web` is an app argument, not a
+  // profile alias.
+  if (argv[2] === 'web') return 'web';
+  return undefined;
+}
+
+/**
  * Resolve the a2a.json path for the current process, without depending on
  * the launch directory. The plugin must work no matter where `dsh` was
  * started from (dsh does NOT chdir into the profile directory), so this
@@ -95,7 +127,9 @@ export function profileNameFromArgv(): string | undefined {
  *
  * Order:
  *   0. `$DSH_HOME/profiles/<argv --profile>/a2a.json` — the active profile
- *      as named on the command line (most authoritative; works from ANY cwd)
+ *      as named on the command line (most authoritative; works from ANY cwd).
+ *      Also matches the `dsh web` alias, which boots profile `web` without
+ *      writing `--profile` into argv.
  *   1. `cwd/a2a.json` — explicit when launched inside a profile dir
  *   2. outward from cwd: the nearest ancestor holding `a2a.json` — covers
  *      launching from e.g. a repo checkout whose parent chain includes the
@@ -114,8 +148,10 @@ export function resolveConfigPath(): string {
   const home = process.env.DSH_HOME ?? join(homedir(), '.dsh');
   const base = cwd.split(/[\\/]/).pop() ?? '';
 
-  // 0. Active profile from argv — authoritative regardless of cwd.
-  const profileName = profileNameFromArgv();
+  // 0. Active profile from argv — authoritative regardless of cwd. Also
+  //    handles the `dsh web` alias, which boots profile `web` without putting
+  //    `--profile` in argv.
+  const profileName = profileNameFromArgv() ?? profileNameFromDshAlias();
   if (profileName && profileName !== '.' && profileName !== '..' && !profileName.includes('/') && !profileName.includes('\\')) {
     const argvFile = join(home, 'profiles', profileName, A2A_CONFIG_FILENAME);
     if (existsSync(argvFile)) return argvFile;
