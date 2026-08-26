@@ -8,6 +8,10 @@
  * The data and the controls live behind the host's `/a2a/api` routes
  * (served by the node half on the same webserver); the browser half is a
  * thin read/write client with no protocol knowledge.
+ *
+ * Styling: a single idempotent stylesheet (dashboard.css.ts) built entirely
+ * on the product's `--dsw-alias-*` design tokens, so light/dark themes and
+ * narrow-window layouts follow the DSH shell. No inline styles.
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';

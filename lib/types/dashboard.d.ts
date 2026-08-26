@@ -105,6 +105,26 @@ export interface DashboardControlHooks {
     serverStatus?: () => ControlResult;
     /** Runtime-remove an outbound agent by its connection id. */
     removeAgent?: (connectionId: string) => Promise<ControlResult>;
+    /** Update the outbound-server identity (AgentCard) at runtime (persisted). */
+    setServerIdentity?: (patch: {
+        agentName?: string;
+        agentDescription?: string;
+        agentVersion?: string;
+        baseUrl?: string;
+        endpointPath?: string;
+        skills?: Array<{
+            id: string;
+            name: string;
+            description: string;
+            tags?: string[];
+        }>;
+    }) => Promise<ControlResult>;
+    /** Update a saved outbound agent's advanced fields, reconnecting to apply. */
+    updateAgent?: (connectionId: string, patch: {
+        timeoutMs?: number;
+        mapSkills?: boolean;
+        bearerToken?: string;
+    }) => Promise<ControlResult>;
 }
 /** Registry of live A2A connections, both directions. */
 export declare class DashboardRegistry {
