@@ -102,6 +102,20 @@ export interface DashboardControlHooks {
   serverStatus?: () => ControlResult;
   /** Runtime-remove an outbound agent by its connection id. */
   removeAgent?: (connectionId: string) => Promise<ControlResult>;
+  /** Update the outbound-server identity (AgentCard) at runtime (persisted). */
+  setServerIdentity?: (patch: {
+    agentName?: string;
+    agentDescription?: string;
+    agentVersion?: string;
+    baseUrl?: string;
+    endpointPath?: string;
+    skills?: Array<{ id: string; name: string; description: string; tags?: string[] }>;
+  }) => Promise<ControlResult>;
+  /** Update a saved outbound agent's advanced fields, reconnecting to apply. */
+  updateAgent?: (
+    connectionId: string,
+    patch: { timeoutMs?: number; mapSkills?: boolean; bearerToken?: string },
+  ) => Promise<ControlResult>;
 }
 
 /** Registry of live A2A connections, both directions. */
@@ -311,6 +325,31 @@ export class DashboardRegistry {
         return this.hooks.serverStatus
           ? Promise.resolve(this.hooks.serverStatus())
           : { ok: false, message: 'server-status is not wired (server mode not mounted)' };
+      case 'set-server-identity': {
+        if (!this.hooks.setServerIdentity) {
+          return { ok: false, message: 'set-server-identity is not wired (server not mounted)' };
+        }
+        return this.hooks.setServerIdentity({
+          agentName: payload?.agentName as string | undefined,
+          agentDescription: payload?.agentDescription as string | undefined,
+          agentVersion: payload?.agentVersion as string | undefined,
+          baseUrl: payload?.baseUrl as string | undefined,
+          endpointPath: payload?.endpointPath as string | undefined,
+          skills: payload?.skills as
+            | Array<{ id: string; name: string; description: string; tags?: string[] }>
+            | undefined,
+        });
+      }
+      case 'update-agent': {
+        if (!this.hooks.updateAgent) {
+          return { ok: false, message: 'update-agent is not wired (client mode not mounted)' };
+        }
+        return this.hooks.updateAgent(target, {
+          timeoutMs: typeof payload?.timeoutMs === 'number' ? (payload.timeoutMs as number) : undefined,
+          mapSkills: typeof payload?.mapSkills === 'boolean' ? (payload.mapSkills as boolean) : undefined,
+          bearerToken: (payload?.bearerToken as string) || undefined,
+        });
+      }
       default:
         return { ok: false, message: `unknown action ${action}` };
     }
