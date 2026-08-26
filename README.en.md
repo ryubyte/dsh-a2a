@@ -22,28 +22,40 @@ It turns a DSH instance into a full A2A peer in both directions:
 
 ### Connection dashboard (设置 → A2A 连接)
 
-- **Outbound agents** — remote agents this DSH connects to (name, connection state, AgentCard URL, skill/tool counts, last activity), each with **Reconnect / Enable / Disable / Delete** controls. When adding an agent you can supply an optional **Bearer token** — it is sent as `Authorization: Bearer …` on both the AgentCard fetch and every JSON-RPC call, and persisted alongside the agent in `a2a.json`.
+The panel is split into two tabs by **role**, and **everything is configurable in the UI — no need to hand-edit `a2a.json`**:
+
+**"Connected agents" (this DSH as a client, outbound)**
+
+- Lists connected remote agents (name, connection state, AgentCard URL, skill/tool counts, last activity); expand to see each skill's name/tags/description. Each agent has **Reconnect / Settings / Disable / Delete** controls (a disabled agent shows as a greyed-out placeholder card whose control becomes **Enable**).
+- **Settings** — edit that agent's **timeout (timeoutMs)**, **skill mapping (mapSkills)**, and **Bearer token** in place; saving reconnects with the new config to apply it.
+- **Add agent** — enter an AgentCard URL (optional Bearer token) → "Import" to preview the remote name/description/skills → "Connect". Config is written back to `a2a.json`.
+
+**"Public service" (this DSH as an agent, inbound)**
+
+- **Visual identity editing** — read-only view of the service name/description/version, endpoint, Agent Card URL (one-click copy) and Skills; click "Edit" to change these fields in place and **fully add/edit/remove Skills**, saving rebuilds the AgentCard immediately (no restart).
+- **Guided setup** — on a fresh install (no `a2a.json`), this tab shows a form pre-filled with sensible defaults; tweak as needed and click "Create & go online" to publish the service — one step generates `a2a.json` and starts serving.
+- **Online / offline** toggle; shows **who executes inbound tasks** (custom executor / this DSH's agent session / none).
+- **Inbound auth** — set or clear the shared Bearer token that gates the endpoint (persisted to `a2a.json`, effective immediately).
 - **Inbound peers** — who is calling this DSH (label, source address, first/last seen, task count, streaming flag), with a close control.
-- **A2A server** — inbound server status with an online/offline toggle, endpoint and skill overview; it also shows **who executes inbound tasks** (custom executor / this DSH's agent session / none) and an **inbound auth** control to set or clear the shared Bearer token that gates the endpoint (persisted to `a2a.json`, effective immediately).
 - The panel refreshes every 3 s; `/a2a/api` serves a JSON snapshot and control endpoints, fenced to loopback/same-origin (the token value is never returned in the snapshot — only whether one is configured).
 
 ### Runtime configuration (a2a.json)
 
-Configuration is driven by **`a2a.json`** (per profile, UI-editable) — manage
-agents without touching the composition. The file is resolved from the active
-profile, not the launch directory: the plugin parses `--profile <name>` from
-the process command line (the `dsh web` alias is recognized as the `web`
-profile too) and reads/writes `~/.dsh/profiles/<name>/a2a.json`.
+Configuration is driven by **`a2a.json`** (per profile, fully manageable from the
+UI) — manage agents and the public service without touching the composition. The
+file is resolved from the active profile, not the launch directory: the plugin
+parses `--profile <name>` from the process command line (the `dsh web` alias is
+recognized as the `web` profile too) and reads/writes
+`~/.dsh/profiles/<name>/a2a.json` — configs the UI generates on first use also
+land in that profile directory, so they are read no matter which working
+directory you launch from. Hand-writing `a2a.json` is still supported (below),
+but **a new user can do everything through the UI**.
 
 ## Screenshots
 
-| Outbound agents (who this DSH connects to) | Inbound peers (who calls this DSH) |
+| Connected agents (this DSH as a client) | Public service (this DSH as an agent) |
 |---|---|
-| ![Outbound agents dashboard](docs/screenshots/dashboard-outbound.png) | ![Inbound peers dashboard](docs/screenshots/dashboard-inbound.png) |
-
-| Inbound with a live record | A2A server status panel |
-|---|---|
-| ![Inbound peer record](docs/screenshots/server-inbound.png) | ![A2A server status](docs/screenshots/server-serve.png) |
+| ![Connected agents panel](docs/screenshots/panel-client.png) | ![Public service panel](docs/screenshots/panel-server.png) |
 
 ## Installation
 
@@ -100,9 +112,10 @@ Declare agents to connect to in the profile's `a2a.json`:
 }
 ```
 
-Alternatively, in the Web GUI go to 设置 → A2A 连接 → 添加 Agent, paste an
-AgentCard URL to import and connect — the config is written back to
-`a2a.json`.
+Alternatively, in the Web GUI go to 设置 → A2A 连接 → "Connected agents" → Add
+agent, paste an AgentCard URL to import and connect — the config is written back
+to `a2a.json`. After connecting, the agent's "Settings" lets you adjust its
+timeout, skill mapping, and token.
 
 Once connected, the remote agent's skills appear as model tools:
 `a2a__<name>__<skill>`.
@@ -113,14 +126,19 @@ different local sessions are isolated into separate conversations.
 
 ### 2. Expose this DSH as an A2A agent (inbound)
 
-Enable server mode in `a2a.json`:
+> **Recommended: use the UI.** Open 设置 → A2A 连接 → "Public service"; a fresh
+> install shows a pre-filled form — tweak a few fields and click "Create & go
+> online". No hand-written JSON required. The config below is the equivalent
+> for reference or scripted deployment.
+
+Or enable server mode manually in `a2a.json`:
 
 ```jsonc
 {
   "mode": "server",
   "server": {
     "enabled": true,             // explicitly turn the inbound server on
-    // "baseUrl": "http://127.0.0.1:3080",   // optional; default: derive from webServer
+    // "baseUrl": omit to auto-infer (see below); set only behind a proxy / public domain
     "agentName": "My DSH Agent",
     "agentDescription": "A DSH agent over A2A v1.0",
     "agentVersion": "0.1.0",
@@ -131,7 +149,11 @@ Enable server mode in `a2a.json`:
 }
 ```
 
-Other A2A clients discover this DSH via
+When `baseUrl` is left empty (or cleared in the UI), the AgentCard auto-infers the webServer's **real listen address**, so it never advertises a stale port; set it explicitly only when this DSH sits behind a reverse proxy or public domain whose external address differs from the local listener.
+
+> **About `mode`**: `mode` (`client` / `server` / `both`) selects which half mounts at startup, defaulting to `client`. It is **optional** — `server.enabled: true` or the presence of `agents` turns on the respective half, so an `a2a.json` generated through the UI usually **omits `mode`** and relies on those fields. Writing `mode` by hand is clearer but equivalent.
+
+Other A2A clients discover this DSH via the auto-inferred
 `http://<host>:<port>/.well-known/agent-card.json` and call the `/a2a` endpoint.
 
 #### Who executes an inbound task (executor precedence)
