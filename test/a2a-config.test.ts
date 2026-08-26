@@ -87,4 +87,29 @@ describe('a2a-config profile resolution', { concurrency: false }, () => {
 
     assert.equal(resolveConfigPath(), join(home, 'profiles', 'custom', 'a2a.json'));
   });
+
+  test('resolveConfigPath: no existing file + --profile <name> → writes the profile dir, not cwd', () => {
+    // Fresh install: no a2a.json anywhere. The write target must be the named
+    // profile dir (dsh reads from there next launch), NOT the arbitrary cwd —
+    // otherwise a UI-generated config is lost on restart.
+    const home = mkdtempSync(join(tmpdir(), 'dsh-a2a-fresh-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'dsh-a2a-cwd-')); // some unrelated dir
+    process.env.DSH_HOME = home;
+    process.chdir(cwd);
+    process.argv = ['node', 'dsh', '--profile', 'a2a-server', '--port', '3081'];
+
+    assert.equal(resolveConfigPath(), join(home, 'profiles', 'a2a-server', 'a2a.json'));
+  });
+
+  test('resolveConfigPath: no existing file and no profile named → falls back to cwd', () => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-a2a-nop-'));
+    const cwd = mkdtempSync(join(tmpdir(), 'dsh-a2a-nopcwd-'));
+    process.env.DSH_HOME = home;
+    process.chdir(cwd);
+    process.argv = ['node', 'dsh', '--port', '3081']; // no --profile, no alias
+
+    // Compare against process.cwd(): on macOS chdir resolves /tmp → /private/tmp,
+    // and resolveConfigPath builds its cwd path from process.cwd() too.
+    assert.equal(resolveConfigPath(), join(process.cwd(), 'a2a.json'));
+  });
 });

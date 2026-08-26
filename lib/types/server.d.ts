@@ -14,6 +14,19 @@ import type { AgentCard, AgentSkill, Message, Part, Task } from './protocol.js';
 import { TaskState } from './protocol.js';
 export interface ServerSkill extends AgentSkill {
 }
+/**
+ * Runtime-editable slice of the advertised AgentCard identity. Every field is
+ * optional; only the provided ones change. Applied in place by
+ * {@link A2AServer.updateCard} (mirrors setBaseUrl/setAuthToken).
+ */
+export interface CardIdentityPatch {
+    agentName?: string;
+    agentDescription?: string;
+    agentVersion?: string;
+    baseUrl?: string;
+    endpointPath?: string;
+    skills?: ServerSkill[];
+}
 export interface ServerOptions {
     /** Public base URL (scheme + host + optional prefix) where this DSH is exposed. */
     baseUrl: string;
@@ -94,7 +107,8 @@ export declare class A2AServer {
     readonly options: ServerOptions;
     readonly store: TaskStore;
     readonly card: AgentCard;
-    readonly endpointPath: string;
+    /** JSON-RPC route path. Mutable: `updateCard` can move it at runtime. */
+    endpointPath: string;
     private execute;
     private listeners;
     private baseUrl;
@@ -106,6 +120,10 @@ export declare class A2AServer {
      * address is known (e.g. ephemeral port). Mutates `card` in place.
      */
     setBaseUrl(baseUrl: string): void;
+    /** The base URL currently advertised in the AgentCard. */
+    getBaseUrl(): string;
+    /** Rebuild the advertised interface URL(s) from the current baseUrl + path. */
+    private rebuildInterfaceUrls;
     /**
      * Set or clear the shared bearer token that gates the inbound endpoint at
      * runtime. Rebuilds the AgentCard so the `bearerAuth` security scheme is
@@ -116,6 +134,20 @@ export declare class A2AServer {
     setAuthToken(token?: string): void;
     /** Whether the inbound endpoint is currently token-gated. */
     get authConfigured(): boolean;
+    /**
+     * Update the advertised identity (name/description/version/baseUrl/
+     * endpointPath/skills) at runtime, in place. Mirrors setBaseUrl/setAuthToken:
+     * mutates `this.options` and the existing `this.card` object's properties —
+     * never reassigns `this.card`, so the route handler closure that reads
+     * `server.card` per request keeps seeing the live card.
+     *
+     * Returns `{ endpointChanged }`: when the JSON-RPC path moved, the caller
+     * (which owns route registration) must re-register routes on the new path —
+     * `updateCard` only mutates the advertised URL, not the live HTTP routes.
+     */
+    updateCard(patch: CardIdentityPatch): {
+        endpointChanged: boolean;
+    };
     private buildCard;
     /** True when the request carries the configured bearer token. */
     private authorized;

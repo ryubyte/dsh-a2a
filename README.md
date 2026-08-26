@@ -22,24 +22,32 @@
 
 ### 连接面板（设置 → A2A 连接）
 
-- **出站 Agent**：列出本 DSH 连接的远程 Agent（名称、连接状态、AgentCard URL、技能/工具数、最近活动），每个 Agent 支持 **重连 / 启用 / 禁用 / 删除**。添加 Agent 时可填 **Bearer Token**（可选），导入与后续 JSON-RPC 调用都会带上 `Authorization: Bearer …`，并随 Agent 一起持久化到 `a2a.json`。
+面板按**角色**分为两个 tab，**全部配置都可在 UI 里完成，无需手改 `a2a.json`**：
+
+**「连接的 Agent」（本 DSH 作为客户端，出站）**
+
+- 列出已连接的远程 Agent（名称、连接状态、AgentCard URL、技能/工具数、最近活动），展开可看每个 skill 的名称/标签/描述；每个 Agent 支持 **重连 / 设置 / 禁用 / 删除**（已禁用的 Agent 显示为灰化占位卡，操作按钮变为 **启用**）。
+- **设置**：就地编辑该 Agent 的 **超时（timeoutMs）**、**技能拆分（mapSkills）**、**Bearer Token**，保存后自动以新配置重连生效。
+- **添加 Agent**：填 AgentCard URL（可选 Bearer Token）→「导入」预览远端名称/描述/技能 →「连接」。配置写回 `a2a.json`。
+
+**「对外服务」（本 DSH 作为 Agent 对外，入站）**
+
+- **服务身份可视化编辑**：只读展示服务名/描述/版本、端点、Agent Card URL（一键复制）与 Skills；点「编辑」就地改这些字段并**完整增删改 Skills**，保存即时重建 AgentCard 生效（无需重启）。
+- **引导式初始化**：全新安装（无 `a2a.json`）时，本页显示预填好合理默认值的表单，用户按需修改后点「创建并上线」即可发布服务——一步生成 `a2a.json` 并启动。
+- **上线 / 下线** 开关；显示 **入站任务由谁执行**（自定义 executor / 本 DSH agent 会话 / 未配置）。
+- **入站鉴权**：设置或清除保护入站端点的共享 Bearer Token（持久化到 `a2a.json`，实时生效）。
 - **入站连接**：谁在调用本 DSH（来源、地址、首/末次连接、任务数、流式标记），支持关闭。
-- **A2A 服务**：入站服务的运行状态，上线 / 下线开关，端点与技能一览；并显示 **入站任务由谁执行**（自定义 executor / 本 DSH agent 会话 / 未配置），以及 **入站鉴权** 开关——可设置或清除保护入站端点的共享 Bearer Token（持久化到 `a2a.json`，实时生效）。
 - 面板每 3 秒自动刷新；`/a2a/api` 提供 JSON 快照与控制接口，受 loopback/same-origin 保护（token 值不会通过快照回传，只暴露「是否已配置」）。
 
 ### 运行时配置（a2a.json）
 
-配置以 **`a2a.json`（按 profile 存放，UI 可编辑）为准**，无需改动组合配置即可管理 Agent。文件定位不依赖启动目录：插件解析进程命令行里的 `--profile <name>`（`dsh web` 别名同样识别为 `web` profile），读写 `~/.dsh/profiles/<name>/a2a.json`。
+配置以 **`a2a.json`（按 profile 存放，可完全通过 UI 管理）为准**，无需改动组合配置即可管理 Agent 与对外服务。文件定位不依赖启动目录：插件解析进程命令行里的 `--profile <name>`（`dsh web` 别名同样识别为 `web` profile），读写 `~/.dsh/profiles/<name>/a2a.json`——UI 首次生成的配置也会写到该 profile 目录，从任意工作目录启动都能读到。手写 `a2a.json` 仍然支持（见下文），但**新用户完全靠 UI 即可完成配置与上线**。
 
 ## 截图
 
-| 出站 Agent（本 DSH 连接了谁） | 入站连接（谁在调用本 DSH） |
+| 连接的 Agent（本 DSH 作为客户端） | 对外服务（本 DSH 作为 Agent） |
 |---|---|
-| ![出站 Agent 面板](docs/screenshots/dashboard-outbound.png) | ![入站连接面板](docs/screenshots/dashboard-inbound.png) |
-
-| 含真实记录的入站 | A2A 服务状态面板 |
-|---|---|
-| ![入站连接记录](docs/screenshots/server-inbound.png) | ![A2A 服务状态](docs/screenshots/server-serve.png) |
+| ![连接的 Agent 面板](docs/screenshots/panel-client.png) | ![对外服务面板](docs/screenshots/panel-server.png) |
 
 ## 安装
 
@@ -93,7 +101,7 @@
 }
 ```
 
-也可以在 Web GUI「设置 → A2A 连接 → 添加 Agent」里输入 AgentCard URL 导入并连接，配置会写回 `a2a.json`。
+也可以在 Web GUI「设置 → A2A 连接 →『连接的 Agent』→ 添加 Agent」里输入 AgentCard URL 导入并连接，配置会写回 `a2a.json`；连接后点该 Agent 的「设置」还能调整超时、技能拆分与 Token。
 
 连接成功后，对方 Agent 的 skills 会作为模型工具出现：`a2a__<name>__<skill>`。
 
@@ -101,14 +109,16 @@
 
 ### 2. 对外提供 A2A 服务（入站）
 
-同样在 `a2a.json` 里开启 server 模式：
+> **推荐：直接用 UI。** 打开「设置 → A2A 连接 →『对外服务』」，全新安装会显示预填好的表单，改几个字段后点「创建并上线」即可——无需手写下面的 JSON。以下为等价的手写配置，供了解字段或脚本化部署时参考。
+
+也可以在 `a2a.json` 里手动开启 server 模式：
 
 ```jsonc
 {
   "mode": "server",
   "server": {
     "enabled": true,             // 显式开启入站服务
-    // "baseUrl": "http://127.0.0.1:3080",   // 可选；默认从 webServer 监听地址推导
+    // "baseUrl": 省略即自动推导（见下），仅反向代理/公网域名时才需显式设置
     "agentName": "My DSH Agent",
     "agentDescription": "A DSH agent over A2A v1.0",
     "agentVersion": "0.1.0",
@@ -119,7 +129,11 @@
 }
 ```
 
-之后其他 A2A 客户端通过 `http://<host>:<port>/.well-known/agent-card.json` 发现本 DSH，通过 `/a2a` 端点调用。
+`baseUrl` 留空（或在 UI 里清空）时，AgentCard 会按 webServer 的**真实监听地址**自动推导，不会公布过期端口；仅当本 DSH 位于反向代理或公网域名之后、对外地址与本地监听不同时，才需要显式填写。
+
+> **关于 `mode`**：`mode`（`client` / `server` / `both`）控制启动时挂载哪一半，缺省为 `client`。它是**可选**的——`server.enabled: true` 或存在 `agents` 就会分别启用对应半区，所以通过 UI 生成的 `a2a.json` 通常**不写 `mode`**，仅靠这些字段隐式推导行为。手写时显式写 `mode` 更直观，二者等价。
+
+之后其他 A2A 客户端通过自动推导出的 `http://<host>:<port>/.well-known/agent-card.json` 发现本 DSH，通过 `/a2a` 端点调用。
 
 #### 入站任务由谁执行（executor 优先级）
 

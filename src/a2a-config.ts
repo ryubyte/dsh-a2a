@@ -179,8 +179,21 @@ export function resolveConfigPath(): string {
   const globalFile = join(home, A2A_CONFIG_FILENAME);
   if (existsSync(globalFile)) return globalFile;
 
-  // Nothing exists yet: prefer writing to cwd (an explicitly cd'd profile
-  // dir or a repo that wants its config local); the profile fallback is next.
+  // Nothing exists yet. If the launcher named a profile (`--profile <name>` or
+  // the `dsh web` alias), the config belongs in that profile dir — dsh reads
+  // from there on the next launch regardless of cwd, so a UI-generated config
+  // must land there or it would be lost on restart. Only when no profile is
+  // known do we fall back to cwd (an explicitly cd'd profile dir, or a
+  // repo-local config).
+  if (
+    profileName &&
+    profileName !== '.' &&
+    profileName !== '..' &&
+    !profileName.includes('/') &&
+    !profileName.includes('\\')
+  ) {
+    return join(home, 'profiles', profileName, A2A_CONFIG_FILENAME);
+  }
   return cwdFile;
 }
 

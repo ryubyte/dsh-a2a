@@ -309,8 +309,9 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
         if (!res.ok) logger?.error?.(`[a2a] failed to save ${res.path}: ${res.message}`);
       };
 
-      // Find an initial (persisted) entry by live connection.
-      const findInitial = (entry: { name: string; agentCardUrl: string }): { idx: number; item: { name: string; agentCardUrl: string; configured: boolean; enabled: boolean } } | undefined => {
+      // Find an initial (persisted) entry by live connection. Returns the full
+      // entry (incl. bearerToken/timeoutMs/mapSkills) so callers can edit them.
+      const findInitial = (entry: { name: string; agentCardUrl: string }): { idx: number; item: (typeof initialAgents)[number] } | undefined => {
         const idx = initialAgents.findIndex((a) => a.configured && a.name === entry.name && a.agentCardUrl === entry.agentCardUrl);
         if (idx < 0) return undefined;
         return { idx, item: initialAgents[idx] };
@@ -469,6 +470,40 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
           dashboard.removeAgent(connectionId);
           return { ok: true, message: `agent ${connectionId} removed` };
         },
+        updateAgent: async (connectionId, patch) => {
+          const entry = live.get(connectionId);
+          const snap = dashboard.snapshot().outbound.find((o) => o.connectionId === connectionId);
+          const name = entry?.name ?? snap?.name;
+          const url = entry?.agentCardUrl ?? snap?.agentCardUrl;
+          const configured = entry?.configured ?? snap?.configured ?? false;
+          if (!name || !url) return { ok: false, message: `connection ${connectionId} not found` };
+          const found = findInitial({ name, agentCardUrl: url });
+          if (!found) return { ok: false, message: 'only saved (configured) agents can be edited' };
+          // Update persisted advanced fields, then reconnect so they bind — these
+          // apply at connect()/registerAgentTools time (like enableAgent).
+          if (patch.timeoutMs !== undefined) found.item.timeoutMs = patch.timeoutMs;
+          if (patch.mapSkills !== undefined) found.item.mapSkills = patch.mapSkills;
+          if (patch.bearerToken !== undefined) found.item.bearerToken = patch.bearerToken || undefined;
+          persistAgents();
+          const item = found.item;
+          // A disabled agent: persist only, don't bring it online.
+          if (item.enabled === false) {
+            return { ok: true, message: `agent ${connectionId} updated (config kept, still disabled)` };
+          }
+          if (entry) {
+            entry.disposeAll();
+            live.delete(connectionId);
+          }
+          dashboard.setAgentState(connectionId, 'reconnecting');
+          const newId = await connect(item.name, item.agentCardUrl, item.configured, {
+            bearerToken: item.bearerToken,
+            timeoutMs: item.timeoutMs,
+            mapSkills: item.mapSkills,
+          });
+          if (!newId) return { ok: false, message: `update of ${connectionId} failed to reconnect` };
+          dashboard.removeAgent(connectionId);
+          return { ok: true, message: `agent ${connectionId} updated as ${newId} (saved to ${configPath})` };
+        },
       });
 
       ctx.effect(() => {
@@ -501,7 +536,15 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
   }
 
   // ── server mode: expose DSH as an A2A agent ───────────────────────────────
-  if (wantsServer) {
+  // The server effect is ALWAYS mounted (not gated on `wantsServer`), so its
+  // control hooks (serverStatus / setServerEnabled / setServerIdentity) are
+  // wired even in a client-only profile — letting the UI create and enable the
+  // A2A server at runtime with no restart and no hand-edit of a2a.json. Route
+  // registration itself is gated on `enabled` (initialized from `wantsServer`),
+  // so a profile that didn't ask to serve starts with the routes off. Building
+  // the A2AServer + probing the executor is side-effect-free (no sessions are
+  // created until an inbound task actually arrives).
+  {
     const store = new TaskStore();
     const taskPeer = new Map<string, string>();
     const pendingSettled = new Set<string>();
@@ -513,6 +556,24 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
         // to 0.0.0.0, advertise a reachable LAN address, not loopback.
         const baseUrl = mergedConfig.baseUrl ?? inferBaseUrl(webServer.host, webServer.port);
         const endpointPath = mergedConfig.endpointPath ?? DEFAULT_ENDPOINT;
+        // Surface a stale pinned baseUrl: if the config pins a port that does
+        // not match the real listen port, the advertised AgentCard URL is
+        // unreachable. We don't silently rewrite an explicit pin (it may point
+        // at a reverse proxy), but we warn so the mismatch is diagnosable —
+        // clearing baseUrl in the UI returns it to auto-inference.
+        if (mergedConfig.baseUrl) {
+          try {
+            const pinnedPort = new URL(mergedConfig.baseUrl).port;
+            if (pinnedPort && Number(pinnedPort) !== webServer.port) {
+              logger?.warn?.(
+                `[a2a] pinned baseUrl ${mergedConfig.baseUrl} port ${pinnedPort} != listen port ${webServer.port}; ` +
+                  `remote callers may be unreachable. Clear baseUrl in settings to auto-infer.`,
+              );
+            }
+          } catch {
+            // malformed pinned URL — ignore (the card just advertises it as-is).
+          }
+        }
 
         // ── executor precedence ───────────────────────────────────────────────
         //   1. explicit `execute` (config injection)          → use it
@@ -605,7 +666,10 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
         );
 
         // ── runtime-enabled route set ──────────────────────────────────────
-        let enabled = true;
+        // Start serving only if this profile asked to (mode server/both or an
+        // explicit server.enabled). A client-only profile mounts the effect but
+        // keeps routes off until the UI enables the server.
+        let enabled = wantsServer;
         let disposers: Array<() => void> = [];
 
         const registerRoutes = (): void => {
@@ -660,20 +724,28 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
           disposers = [];
         };
 
-        registerRoutes();
-        logger?.info?.(
-          `[a2a] A2A server mounted: AgentCard at ${baseUrl}/.well-known/agent-card.json, JSON-RPC at ${server.endpointPath}`,
-        );
+        if (enabled) {
+          registerRoutes();
+          logger?.info?.(
+            `[a2a] A2A server mounted: AgentCard at ${baseUrl}/.well-known/agent-card.json, JSON-RPC at ${server.endpointPath}`,
+          );
+        } else {
+          logger?.info?.('[a2a] A2A server ready but not serving (enable via settings)');
+        }
 
         // ── serve panel hooks ──────────────────────────────────────────────
+        // Read live values off the server: identity edits mutate the card in
+        // place, so a captured `const baseUrl` would go stale. `endpointPath`
+        // and each skill's `tags` are surfaced so the edit form can prefill.
         const serverCard = (): Record<string, unknown> => ({
-          baseUrl,
+          baseUrl: server.getBaseUrl(),
           agentName: server.card.name,
           agentDescription: server.card.description,
           agentVersion: server.card.version,
-          endpoint: `${baseUrl}${server.endpointPath}`,
-          agentCardUrl: `${baseUrl}/.well-known/agent-card.json`,
-          skills: (server.card.skills ?? []).map((s) => ({ id: s.id, name: s.name, description: s.description })),
+          endpointPath: server.endpointPath,
+          endpoint: `${server.getBaseUrl()}${server.endpointPath}`,
+          agentCardUrl: `${server.getBaseUrl()}/.well-known/agent-card.json`,
+          skills: (server.card.skills ?? []).map((s) => ({ id: s.id, name: s.name, description: s.description, tags: s.tags })),
           customExecutor: Boolean(mergedConfig.execute),
           // How inbound tasks are handled: a config-injected executor, this
           // harness's own agent session, or none (refuses until configured).
@@ -689,12 +761,61 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
               registerRoutes();
               enabled = true;
               logger?.info?.('[a2a] A2A server enabled');
-              return { ok: true, message: 'A2A server enabled' };
+            } else {
+              unregisterRoutes();
+              enabled = false;
+              logger?.info?.('[a2a] A2A server disabled');
             }
-            unregisterRoutes();
-            enabled = false;
-            logger?.info?.('[a2a] A2A server disabled');
-            return { ok: true, message: 'A2A server disabled' };
+            // Persist server.enabled so the choice survives restart (mergePersisted
+            // maps server.enabled → serverEnabled → wantsServer on next boot).
+            const next: PersistedA2AConfig = loadPersistedA2A();
+            next.server = { ...(next.server ?? {}), enabled };
+            const res = savePersistedA2A(next);
+            if (!res.ok) {
+              logger?.error?.(`[a2a] failed to persist server.enabled to ${res.path}: ${res.message}`);
+              return { ok: false, message: `applied in-memory but failed to save: ${res.message}` };
+            }
+            return { ok: true, message: enable ? 'A2A server enabled' : 'A2A server disabled' };
+          },
+          setServerIdentity: async (patch) => {
+            // baseUrl semantics: undefined = "not touched"; "" = "clear pin,
+            // return to auto-inference"; non-empty = explicit pin (reverse
+            // proxy / public domain). Empty must NOT reach updateCard (which
+            // would set the advertised URL to ""), so handle it here where the
+            // real listen address (webServer.host/port) is available.
+            const clearBaseUrl = patch.baseUrl === '';
+            const cardPatch = clearBaseUrl ? { ...patch, baseUrl: undefined } : patch;
+            const { endpointChanged } = server.updateCard(cardPatch);
+            if (clearBaseUrl) {
+              // Re-derive from the actual listen address and re-advertise.
+              server.setBaseUrl(inferBaseUrl(webServer.host, webServer.port));
+            }
+            // The JSON-RPC path moved: re-register on the new path, but only
+            // while serving (disabled → routes get the new path on next enable).
+            if (endpointChanged && enabled) {
+              unregisterRoutes();
+              registerRoutes();
+            }
+            // Persist the provided fields to a2a.json server.{...}.
+            const next: PersistedA2AConfig = loadPersistedA2A();
+            const s = { ...(next.server ?? {}) };
+            if (patch.agentName !== undefined) s.agentName = patch.agentName;
+            if (patch.agentDescription !== undefined) s.agentDescription = patch.agentDescription;
+            if (patch.agentVersion !== undefined) s.agentVersion = patch.agentVersion;
+            // Clear the persisted pin so it stays auto on restart; a non-empty
+            // value pins it; undefined leaves the existing setting untouched.
+            if (clearBaseUrl) delete s.baseUrl;
+            else if (patch.baseUrl !== undefined) s.baseUrl = patch.baseUrl;
+            if (patch.endpointPath !== undefined) s.endpointPath = patch.endpointPath;
+            if (patch.skills !== undefined) s.skills = patch.skills;
+            next.server = s;
+            const res = savePersistedA2A(next);
+            if (!res.ok) {
+              logger?.error?.(`[a2a] failed to persist server identity to ${res.path}: ${res.message}`);
+              return { ok: false, message: `applied in-memory but failed to save: ${res.message}` };
+            }
+            logger?.info?.(`[a2a] server identity updated (saved to ${res.path})`);
+            return { ok: true, message: `已更新对外服务 (saved to ${res.path})` };
           },
           setServerAuthToken: async (token) => {
             server.setAuthToken(token);

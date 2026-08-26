@@ -32,6 +32,20 @@ import {
 
 export interface ServerSkill extends AgentSkill {}
 
+/**
+ * Runtime-editable slice of the advertised AgentCard identity. Every field is
+ * optional; only the provided ones change. Applied in place by
+ * {@link A2AServer.updateCard} (mirrors setBaseUrl/setAuthToken).
+ */
+export interface CardIdentityPatch {
+  agentName?: string;
+  agentDescription?: string;
+  agentVersion?: string;
+  baseUrl?: string;
+  endpointPath?: string;
+  skills?: ServerSkill[];
+}
+
 export interface ServerOptions {
   /** Public base URL (scheme + host + optional prefix) where this DSH is exposed. */
   baseUrl: string;
@@ -155,7 +169,8 @@ export class A2AServer {
   readonly options: ServerOptions;
   readonly store: TaskStore;
   readonly card: AgentCard;
-  readonly endpointPath: string;
+  /** JSON-RPC route path. Mutable: `updateCard` can move it at runtime. */
+  endpointPath: string;
   private execute: TaskExecutor;
   private listeners = new Set<(ev: StreamResponse) => void>();
   private baseUrl: string;
@@ -181,6 +196,16 @@ export class A2AServer {
    */
   setBaseUrl(baseUrl: string): void {
     this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.rebuildInterfaceUrls();
+  }
+
+  /** The base URL currently advertised in the AgentCard. */
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  /** Rebuild the advertised interface URL(s) from the current baseUrl + path. */
+  private rebuildInterfaceUrls(): void {
     this.card.supportedInterfaces = this.card.supportedInterfaces.map((iface) => ({
       ...iface,
       url: `${this.baseUrl}${this.endpointPath}`,
@@ -209,6 +234,47 @@ export class A2AServer {
   /** Whether the inbound endpoint is currently token-gated. */
   get authConfigured(): boolean {
     return Boolean(this.options.authToken);
+  }
+
+  /**
+   * Update the advertised identity (name/description/version/baseUrl/
+   * endpointPath/skills) at runtime, in place. Mirrors setBaseUrl/setAuthToken:
+   * mutates `this.options` and the existing `this.card` object's properties —
+   * never reassigns `this.card`, so the route handler closure that reads
+   * `server.card` per request keeps seeing the live card.
+   *
+   * Returns `{ endpointChanged }`: when the JSON-RPC path moved, the caller
+   * (which owns route registration) must re-register routes on the new path —
+   * `updateCard` only mutates the advertised URL, not the live HTTP routes.
+   */
+  updateCard(patch: CardIdentityPatch): { endpointChanged: boolean } {
+    let endpointChanged = false;
+    if (patch.agentName !== undefined) {
+      this.options.agentName = patch.agentName;
+      this.card.name = patch.agentName;
+    }
+    if (patch.agentDescription !== undefined) {
+      this.options.agentDescription = patch.agentDescription;
+      this.card.description = patch.agentDescription;
+    }
+    if (patch.agentVersion !== undefined) {
+      this.options.agentVersion = patch.agentVersion;
+      this.card.version = patch.agentVersion;
+    }
+    if (patch.skills !== undefined) {
+      this.options.skills = patch.skills;
+      this.card.skills = patch.skills;
+    }
+    if (patch.endpointPath !== undefined && patch.endpointPath !== this.endpointPath) {
+      this.endpointPath = patch.endpointPath || '/a2a';
+      endpointChanged = true;
+    }
+    if (patch.baseUrl !== undefined) {
+      this.baseUrl = patch.baseUrl.replace(/\/$/, '');
+    }
+    // Any baseUrl/endpointPath change invalidates the advertised interface URL.
+    if (patch.baseUrl !== undefined || endpointChanged) this.rebuildInterfaceUrls();
+    return { endpointChanged };
   }
 
   private buildCard(): AgentCard {
