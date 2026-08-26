@@ -1,7 +1,7 @@
 {
   "name": "@ryubyte/dsh-a2a",
   "description": "Agent2Agent (A2A) protocol v1.0 plugin for DeepSeek Harness (DSH): outbound client (remote AgentCard skills as ctx.tools), inbound server (A2A JSON-RPC + AgentCard endpoint), and a settings dashboard of live A2A connections",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
