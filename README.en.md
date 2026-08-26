@@ -9,6 +9,23 @@ It turns a DSH instance into a full A2A peer in both directions:
 - **Client mode (outbound)** — discover a remote agent via its **AgentCard**, map each **skill** to a DSH model tool (`a2a__<name>__<skill>`), and execute remote tasks through A2A **JSON-RPC**.
 - **Server mode (inbound)** — expose this DSH to other agents: `/.well-known/agent-card.json` plus a JSON-RPC endpoint (`SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SendStreamingMessage` over SSE) on the DSH webserver.
 
+## Installation
+
+Install into a profile with one command and restart:
+
+    dsh plugin --profile web add @ryubyte/dsh-a2a
+    dsh --profile web
+
+`dsh plugin` installs the package into the profile and auto-registers the
+plugin layer (this package declares `dsh.bundle.patch` in `package.json`) — no
+manual configuration is needed.
+
+## Screenshots
+
+| Connected agents (this DSH as a client) | Public service (this DSH as an agent) |
+|---|---|
+| ![Connected agents panel](docs/screenshots/panel-client.png) | ![Public service panel](docs/screenshots/panel-server.png) |
+
 ## Features
 
 ### Protocol surface (A2A v1.0)
@@ -50,46 +67,6 @@ recognized as the `web` profile too) and reads/writes
 land in that profile directory, so they are read no matter which working
 directory you launch from. Hand-writing `a2a.json` is still supported (below),
 but **a new user can do everything through the UI**.
-
-## Screenshots
-
-| Connected agents (this DSH as a client) | Public service (this DSH as an agent) |
-|---|---|
-| ![Connected agents panel](docs/screenshots/panel-client.png) | ![Public service panel](docs/screenshots/panel-server.png) |
-
-## Installation
-
-### Option 1: from npm (recommended)
-
-Once published to npm, install into the target profile with one command and
-restart:
-
-    dsh plugin --profile <profile> add @ryubyte/dsh-a2a
-    dsh --profile <profile>
-
-`dsh plugin` installs the package into the profile and auto-registers the
-plugin layer (this package declares `dsh.bundle.patch` in `package.json`) — no
-manual configuration is needed.
-
-### Option 2: from the repository (development)
-
-For hacking on the code, requires Node.js >= 22:
-
-    # 1. Clone the repo
-    git clone https://github.com/ryubyte/dsh-a2a.git
-    cd dsh-a2a
-
-    # 2. Install deps and build
-    npm install
-    npm run build
-
-    # 3. Link into the target profile
-    dsh plugin --profile <profile> add link:$(pwd)
-
-    # 4. Restart
-    dsh --profile <profile>
-
-After changing source, re-run `npm run build` and restart.
 
 ## Usage
 
@@ -160,7 +137,7 @@ Other A2A clients discover this DSH via the auto-inferred
 
 On each inbound task the server picks an executor in this order:
 
-1. **Explicit `execute`** (injected programmatically) — yours wins.
+1. **Explicit `execute`** (injected via composition config) — yours wins.
 2. **This DSH's own agent session** (the default, when an agent loop is
    present) — **one session per A2A `contextId`**: the first task for a context
    `ctx.agents.create()`s a session (later tasks for the same context reuse it,
@@ -194,37 +171,6 @@ On each inbound task the server picks an executor in this order:
 > For local testing you may still pass `shellExecutor`, which runs the prompt as
 > a `/bin/sh -c` command — trusted clients only. For production put a TLS
 > reverse proxy in front and set `authToken` as needed.
-
-### 3. Programmatic use
-
-```ts
-import { A2AClient, A2AServer, TaskStore } from '@ryubyte/dsh-a2a';
-
-// outbound: connect to a remote agent
-const client = await A2AClient.connect('https://agent.example.com');
-const { task } = await client.sendMessage({
-  messageId: crypto.randomUUID(),
-  role: 'ROLE_USER',
-  parts: [{ text: 'Draft a report' }],
-});
-for await (const ev of client.streamMessage({ messageId: crypto.randomUUID(), role: 'ROLE_USER', parts: [{ text: 'hi' }] })) {
-  // ev.statusUpdate | ev.artifactUpdate | ev.task | ev.message
-}
-
-// inbound: wire a custom executor to your own agent loop
-const store = new TaskStore();
-const server = new A2AServer({
-  baseUrl: 'http://127.0.0.1:3080',
-  agentName: 'My DSH',
-  agentDescription: '...',
-  agentVersion: '1.0.0',
-  execute: async ({ message }) => ({
-    messageId: crypto.randomUUID(),
-    role: 'ROLE_AGENT',
-    parts: [{ text: await myAgentRun(message.parts) }],
-  }),
-}, store);
-```
 
 ## Directory structure
 
@@ -283,11 +229,3 @@ const server = new A2AServer({
   before exposing beyond localhost.
 - Bearer tokens — both the outbound per-agent token and the inbound endpoint
   `authToken` — are stored in plaintext in `a2a.json`; secure the file yourself.
-
-## Development
-
-```bash
-npm install
-npm run build    # tsc(types) + tsdown(lib) + wrap client → lib/client.js
-npm test         # node:test + tsx (unit/integration) + client-bundle smoke
-```

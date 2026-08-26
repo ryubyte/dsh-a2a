@@ -9,6 +9,21 @@
 - **Client 模式（出站）**——通过远程 Agent 的 **AgentCard** 发现它，把每个 **skill** 映射为 DSH 模型工具（`a2a__<name>__<skill>`），通过 A2A **JSON-RPC** 执行远程任务。
 - **Server 模式（入站）**——把本 DSH 暴露给其他 Agent：在 DSH webserver 上提供 `/.well-known/agent-card.json` 与 JSON-RPC 端点（`SendMessage`、`GetTask`、`ListTasks`、`CancelTask`、基于 SSE 的 `SendStreamingMessage`）。
 
+## 安装
+
+一行命令装进 profile，重启即生效：
+
+    dsh plugin --profile web add @ryubyte/dsh-a2a
+    dsh --profile web
+
+`dsh plugin` 会把包装进 profile 并自动加入插件层（本包在 package.json 里声明了 `dsh.bundle.patch`），无需手动改任何配置。
+
+## 截图
+
+| 连接的 Agent（本 DSH 作为客户端） | 对外服务（本 DSH 作为 Agent） |
+|---|---|
+| ![连接的 Agent 面板](docs/screenshots/panel-client.png) | ![对外服务面板](docs/screenshots/panel-server.png) |
+
 ## 功能
 
 ### 协议能力（A2A v1.0）
@@ -42,43 +57,6 @@
 ### 运行时配置（a2a.json）
 
 配置以 **`a2a.json`（按 profile 存放，可完全通过 UI 管理）为准**，无需改动组合配置即可管理 Agent 与对外服务。文件定位不依赖启动目录：插件解析进程命令行里的 `--profile <name>`（`dsh web` 别名同样识别为 `web` profile），读写 `~/.dsh/profiles/<name>/a2a.json`——UI 首次生成的配置也会写到该 profile 目录，从任意工作目录启动都能读到。手写 `a2a.json` 仍然支持（见下文），但**新用户完全靠 UI 即可完成配置与上线**。
-
-## 截图
-
-| 连接的 Agent（本 DSH 作为客户端） | 对外服务（本 DSH 作为 Agent） |
-|---|---|
-| ![连接的 Agent 面板](docs/screenshots/panel-client.png) | ![对外服务面板](docs/screenshots/panel-server.png) |
-
-## 安装
-
-### 方式一：从 npm 安装（推荐）
-
-插件发布到 npm 后，一行命令装进目标 profile，重启即生效：
-
-    dsh plugin --profile <profile> add @ryubyte/dsh-a2a
-    dsh --profile <profile>
-
-`dsh plugin` 会把包装进 profile 并自动加入插件层（本包在 package.json 里声明了 `dsh.bundle.patch`），无需手动改任何配置。
-
-### 方式二：从仓库安装（开发调试）
-
-用于改代码调试，需要 Node.js >= 22 与 pnpm：
-
-    # 1. 克隆仓库
-    git clone https://github.com/ryubyte/dsh-a2a.git
-    cd dsh-a2a
-
-    # 2. 安装依赖并构建
-    npm install
-    npm run build
-
-    # 3. 链接进目标 profile
-    dsh plugin --profile <profile> add link:$(pwd)
-
-    # 4. 重启
-    dsh --profile <profile>
-
-改完源码后重跑 `npm run build` 再重启即可。
 
 ## 使用
 
@@ -139,7 +117,7 @@
 
 server 模式收到任务后，按以下优先级选择 executor：
 
-1. **显式 `execute`**（编程接入时注入）—— 用你的。
+1. **显式 `execute`**（通过 composition 配置注入）—— 用你的。
 2. **本 DSH 的 agent 会话**（默认，当 agent 循环就位时）—— 按 A2A `contextId` **一个对话一个会话**：某 `contextId` 首个任务 `ctx.agents.create()` 建会话（后续同 `contextId` 复用同一会话，历史累积；进程重启后按需 `resume`），把消息作为 `next-turn` 唤醒项发给它，等 `whenIdle()`，取最新 assistant 回复作为 A2A artifact。同一 `contextId` 的并发任务按序串行，不同 `contextId` 并行。会话不逐任务释放（否则无法累积上下文），插件卸载/下线时统一释放。开 server 即可「接收并处理任务」，无需写代码。
 3. **`notConfiguredExecutor`**（兜底）—— 既没注入 `execute`、composition 里又没有可用 agent 循环（如仅 dsh-base 的最小 profile）时，返回「no executor configured — inject one」，**不执行任何命令**。
 
@@ -150,37 +128,6 @@ server 模式收到任务后，按以下优先级选择 executor：
 > 取消：`CancelTask` 会 abort 正在运行任务的 executor 信号，真正中止 agent 回合（不只是改任务状态）。
 >
 > 本机自测也可显式传入 `shellExecutor`（把 prompt 当作 shell 命令执行，仅限可信客户端）；生产请置于 TLS 反向代理之后并按需配 `authToken`。
-
-### 3. 编程接入
-
-```ts
-import { A2AClient, A2AServer, TaskStore } from '@ryubyte/dsh-a2a';
-
-// 出站：连接远程 Agent
-const client = await A2AClient.connect('https://agent.example.com');
-const { task } = await client.sendMessage({
-  messageId: crypto.randomUUID(),
-  role: 'ROLE_USER',
-  parts: [{ text: 'Draft a report' }],
-});
-for await (const ev of client.streamMessage({ messageId: crypto.randomUUID(), role: 'ROLE_USER', parts: [{ text: 'hi' }] })) {
-  // ev.statusUpdate | ev.artifactUpdate | ev.task | ev.message
-}
-
-// 入站：自定义 executor 接入 DSH agent 循环
-const store = new TaskStore();
-const server = new A2AServer({
-  baseUrl: 'http://127.0.0.1:3080',
-  agentName: 'My DSH',
-  agentDescription: '...',
-  agentVersion: '1.0.0',
-  execute: async ({ message }) => ({
-    messageId: crypto.randomUUID(),
-    role: 'ROLE_AGENT',
-    parts: [{ text: await myAgentRun(message.parts) }],
-  }),
-}, store);
-```
 
 ## 目录结构
 
@@ -217,11 +164,3 @@ const server = new A2AServer({
 - 入站服务的执行策略见[入站任务由谁执行](#入站任务由谁执行executor-优先级)：有 agent 循环时默认由本 DSH 会话执行（绑定工作目录 cwd），否则（且未注入 executor）**拒绝执行**并返回「no executor configured」。`shellExecutor` 仅限本地自测。无论哪种 executor，都切勿向不受信网络暴露 server 模式（默认无鉴权，除非配置 `authToken`）。
 - A2A 规范要求生产 `AgentInterface.url` 使用 HTTPS；DSH webServer 默认仅绑 loopback，对外暴露前需自行加 TLS。
 - Bearer token（出站按 Agent 配置的、入站保护端点的 `authToken`）均明文存于 `a2a.json`，请自行保证该文件权限。
-
-## 开发
-
-```bash
-npm install
-npm run build    # tsc(types) + tsdown(lib) + wrap client → lib/client.js
-npm test         # node:test + tsx（单元 / 集成）+ client-bundle smoke
-```
