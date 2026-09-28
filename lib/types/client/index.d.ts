@@ -13,7 +13,7 @@
  * on the product's `--dsw-alias-*` design tokens, so light/dark themes and
  * narrow-window layouts follow the DSH shell. No inline styles.
  */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import { type ReactElement } from 'react';
 /** Services this plugin needs from the client runtime. */

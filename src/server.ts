@@ -697,7 +697,7 @@ interface AgentUserMessage {
   readonly id: string;
   readonly role: 'user';
   readonly content: AgentTextBlock[];
-  readonly source: { kind: 'plugin'; plugin: string };
+  readonly source: { kind: string };
 }
 
 /** The slice of a live `Agent` we drive (mirrors `@deepseek-ai/dsh-agent` `Agent`). */
@@ -772,7 +772,7 @@ export interface DshAgentExecutorOptions {
    * absolute — pass `process.cwd()` (the profile's workspace) at wire time.
    */
   cwd: string;
-  /** `source.plugin` tag stamped on inbound messages (defaults to `'a2a'`). */
+  /** Producer tag stamped on inbound messages (defaults to `'a2a'`); serialized as `plugin:<name>` under session format v4. */
   plugin?: string;
   /** Optional static per-agent model routing forwarded to `create()`. */
   agentOptions?: { provider?: string; model?: string; maxTokens?: number };
@@ -935,7 +935,7 @@ export function createDshAgentExecutor(
       id: crypto.randomUUID(),
       role: 'user',
       content: [{ type: 'text', text: prompt }],
-      source: { kind: 'plugin', plugin },
+      source: { kind: `plugin:${plugin}` },
     });
     agent.send(userMessage, 'next-turn', true);
     // Fire the one-time naming/grouping hook after the first prompt is queued

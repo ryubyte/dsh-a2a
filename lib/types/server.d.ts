@@ -238,8 +238,7 @@ interface AgentUserMessage {
     readonly role: 'user';
     readonly content: AgentTextBlock[];
     readonly source: {
-        kind: 'plugin';
-        plugin: string;
+        kind: string;
     };
 }
 /** The slice of a live `Agent` we drive (mirrors `@deepseek-ai/dsh-agent` `Agent`). */
@@ -324,7 +323,7 @@ export interface DshAgentExecutorOptions {
      * absolute — pass `process.cwd()` (the profile's workspace) at wire time.
      */
     cwd: string;
-    /** `source.plugin` tag stamped on inbound messages (defaults to `'a2a'`). */
+    /** Producer tag stamped on inbound messages (defaults to `'a2a'`); serialized as `plugin:<name>` under session format v4. */
     plugin?: string;
     /** Optional static per-agent model routing forwarded to `create()`. */
     agentOptions?: {

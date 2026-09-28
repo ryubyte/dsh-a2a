@@ -42,6 +42,12 @@ globalThis.window = {
           return disposer;
         },
         slots: {
+          // Mirror the real API: `inject(key, cb)` runs the registration callback
+          // once the slot declaration is committed. The mock treats the slot as
+          // already declared, so it invokes `cb` synchronously and returns its disposer.
+          inject(_key, cb) {
+            return cb();
+          },
           register(options, component) {
             count += 1;
             savedOptions = options;

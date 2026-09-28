@@ -14,7 +14,10 @@
  * narrow-window layouts follow the DSH shell. No inline styles.
  */
 
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { Context as ClientContext } from '@deepseek-ai/cordis';
+// Side-effect type import: augments cordis `Context` with `slots` (the renderer
+// owns that service; the retired `dsh-client-runtime` used to re-export it).
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import { createElement, useEffect, useState, type ReactElement } from 'react';
@@ -30,24 +33,28 @@ export function apply(ctx: ClientContext): void {
     return () => dispose();
   }, 'dsh-a2a: dashboard styles');
 
-  ctx.effect(() => {
-    try {
-      const off = ctx.slots.register(
-        {
-          name: 'settings.section',
-          id: 'a2a',
-          order: 90,
-          label: () => 'A2A 连接',
-          inject: () => ({}),
-        },
-        DashboardSection,
-      );
-      return () => off();
-    } catch (err) {
-      console.error('[dsh-a2a] failed to register settings section:', err);
-      return () => {};
-    }
-  }, 'dsh-a2a: settings section');
+  // Contribute the "A2A 连接" settings section. The `settings.section` slot is
+  // declared by `dsh-client-ui-settings`, which may activate AFTER this plugin.
+  // A bare `slots.register` throws "slot not declared" when it wins that race
+  // (silently swallowed here, so the section never appears). `slots.inject`
+  // defers the register until the declaration is committed and re-runs it across
+  // declaration lifetimes — the pattern every first-party settings section uses.
+  ctx.effect(
+    () =>
+      ctx.slots.inject('settings.section', () =>
+        ctx.slots.register(
+          {
+            name: 'settings.section',
+            id: 'a2a',
+            order: 90,
+            label: () => 'A2A 连接',
+            inject: () => ({}),
+          },
+          DashboardSection,
+        ),
+      ),
+    'dsh-a2a: settings section',
+  );
 }
 
 // ── wire types (mirror the host dashboard.ts) ──────────────────────────────
