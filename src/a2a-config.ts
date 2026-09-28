@@ -49,6 +49,8 @@ export interface PersistedServerConfig {
   endpointPath?: string;
   /** Optional shared bearer token protecting the inbound /a2a endpoint. */
   authToken?: string;
+  /** Browser origins allowed to call the inbound A2A routes (CORS allowlist); empty/absent = no CORS. `["*"]` opts into wildcard. */
+  corsOrigins?: string[];
   skills?: Array<{ id: string; name: string; description: string; tags?: string[]; examples?: string[] }>;
 }
 
@@ -247,6 +249,7 @@ export function mergePersisted(base: A2APluginConfig, persisted: PersistedA2ACon
     if (pServer.agentVersion) merged.agentVersion = pServer.agentVersion;
     if (pServer.endpointPath) merged.endpointPath = pServer.endpointPath;
     if (pServer.authToken !== undefined) merged.authToken = pServer.authToken;
+    if (pServer.corsOrigins !== undefined) merged.corsOrigins = pServer.corsOrigins;
     if (pServer.skills) merged.skills = pServer.skills;
   }
   return merged;

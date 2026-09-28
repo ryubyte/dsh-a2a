@@ -193,6 +193,11 @@ const css = String.raw`
 .a2a-auth-state[data-on='false'] { color: var(--dsw-alias-label-tertiary, #81858c); }
 .a2a-auth-input-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .a2a-auth-input-row .a2a-input { flex: 1; min-width: 220px; }
+.a2a-cors-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.a2a-cors-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-family: var(--ds-font-family-code, ui-monospace, monospace); padding: 2px 6px 2px 8px; border-radius: var(--dsw-radius-sm, 6px); background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,0.05)); border: .5px solid var(--dsw-alias-border-l3, #d0d3d9); color: var(--dsw-alias-label-secondary, #4a4f57); }
+.a2a-cors-chip-x { border: none; background: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; color: var(--dsw-alias-label-tertiary, #81858c); }
+.a2a-cors-chip-x:hover:not(:disabled) { color: var(--dsw-alias-state-error-primary, #f04438); }
+.a2a-cors-chip-x:disabled { cursor: default; opacity: .4; }
 
 /* ---- inbound table ---- */
 .a2a-table-wrap { overflow-x: auto; border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.12)); border-radius: 10px; }

@@ -42,6 +42,8 @@ export interface PersistedServerConfig {
     endpointPath?: string;
     /** Optional shared bearer token protecting the inbound /a2a endpoint. */
     authToken?: string;
+    /** Browser origins allowed to call the inbound A2A routes (CORS allowlist); empty/absent = no CORS. `["*"]` opts into wildcard. */
+    corsOrigins?: string[];
     skills?: Array<{
         id: string;
         name: string;
