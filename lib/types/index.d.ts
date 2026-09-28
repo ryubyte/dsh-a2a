@@ -41,6 +41,22 @@ export interface A2APluginConfig {
     execute?: ServerOptions['execute'];
     /** Optional shared bearer token protecting the inbound /a2a endpoint. */
     authToken?: string;
+    /**
+     * Browser origins allowed to call the inbound A2A routes cross-origin (CORS).
+     * An explicit allowlist of exact origins (scheme+host+port), e.g.
+     * `['http://localhost:8080', 'https://app.example.com']`.
+     *
+     * DEFAULT IS EMPTY = NO CORS: a browser page from another origin cannot call
+     * the endpoint, which is the safe default — with server mode's optional (and
+     * off-by-default) `authToken`, a wildcard would let any site the user visits
+     * drive their local agent. Each request's `Origin` is matched against this
+     * list; a hit echoes that exact origin back (with `Vary: Origin`), a miss
+     * sends no CORS headers. The literal `['*']` opts into a wildcard (logged as
+     * a warning) for fully-trusted local setups. Credentials are never allowed
+     * (auth rides the Bearer header, not cookies). Scoped to the A2A protocol
+     * routes only — the dashboard API (`/a2a/api`) stays loopback/same-origin.
+     */
+    corsOrigins?: string[];
     /** Serve the dashboard API on the webserver (default true). */
     dashboard?: boolean;
 }

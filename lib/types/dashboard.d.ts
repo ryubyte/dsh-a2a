@@ -101,6 +101,8 @@ export interface DashboardControlHooks {
     setServerEnabled?: (enabled: boolean) => Promise<ControlResult>;
     /** Set or clear the inbound server's shared bearer token at runtime (persisted). */
     setServerAuthToken?: (token?: string) => Promise<ControlResult>;
+    /** Replace the inbound CORS origin allowlist at runtime (persisted); empty = no CORS. */
+    setServerCors?: (origins: string[]) => Promise<ControlResult>;
     /** Read current inbound server status (for the serve panel). */
     serverStatus?: () => ControlResult;
     /** Runtime-remove an outbound agent by its connection id. */

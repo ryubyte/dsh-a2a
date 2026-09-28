@@ -136,6 +136,8 @@ interface ServeStatus {
   executor?: 'custom' | 'dsh-agent' | 'none';
   /** Whether the inbound endpoint is token-gated (never the token value). */
   authConfigured?: boolean;
+  /** Browser origins allowed to call inbound cross-origin (CORS allowlist); empty = no CORS. */
+  corsOrigins?: string[];
 }
 
 interface DiscoveredCard {
@@ -234,6 +236,8 @@ export function DashboardSection(_props: SectionProps): ReactElement {
   const [addToken, setAddToken] = useState('');
   /** Inbound authToken input (serve tab); empty string means "clear". */
   const [authInput, setAuthInput] = useState('');
+  /** New-origin input for the inbound CORS allowlist editor (serve tab). */
+  const [corsInput, setCorsInput] = useState('');
   /** Serve-identity edit mode + form draft (server tab). All hooks stay at the
    * top level in fixed order; a single shared draft avoids per-card hooks. */
   const [editingServe, setEditingServe] = useState(false);
@@ -518,7 +522,7 @@ export function DashboardSection(_props: SectionProps): ReactElement {
               ? serveEditPanel(serveDraft, setServeDraft, (also) => void saveServeIdentity(also), () => setEditingServe(false), busy, false)
               : needsServeSetup(serve)
                 ? serveEditPanel(serveDraft, setServeDraft, (also) => void saveServeIdentity(also), () => setEditingServe(false), busy, true)
-                : serveViewPanel(serve, busy, act, authInput, setAuthInput, startEditServe)
+                : serveViewPanel(serve, busy, act, authInput, setAuthInput, corsInput, setCorsInput, startEditServe)
             : null,
           // (2) inbound connections — who is calling this DSH's A2A endpoint
           createElement(
@@ -864,6 +868,8 @@ function serveViewPanel(
   act: (a: string, t: string, p?: Record<string, unknown>) => Promise<void>,
   authInput: string,
   setAuthInput: (v: string) => void,
+  corsInput: string,
+  setCorsInput: (v: string) => void,
   onEdit: () => void,
 ): ReactElement {
   return createElement(
@@ -933,6 +939,7 @@ function serveViewPanel(
     ),
     serve.enabled ? executorNote(serve) : null,
     serve.enabled ? authControl(serve, busy, act, authInput, setAuthInput) : null,
+    serve.enabled ? corsControl(serve, busy, act, corsInput, setCorsInput) : null,
   );
 }
 
@@ -1100,6 +1107,99 @@ function authControl(
       'div',
       { className: 'a2a-hint' },
       'token 会明文存入 a2a.json,重启后仍生效。设置后,入站 JSON-RPC 请求需带 Authorization: Bearer <token>。',
+    ),
+  );
+}
+
+/**
+ * Inbound CORS allowlist control for the serve tab: shows the allowed browser
+ * origins and lets the operator add/remove them. Empty = no CORS (default),
+ * so cross-origin browser clients are blocked. Origins are exact
+ * scheme+host+port strings; the literal `*` opens it to any site (warned).
+ * Applies live (persisted to a2a.json) — no restart needed.
+ */
+function corsControl(
+  serve: { corsOrigins?: string[] },
+  busy: string | null,
+  act: (a: string, t: string, p?: Record<string, unknown>) => Promise<void>,
+  corsInput: string,
+  setCorsInput: (v: string) => void,
+): ReactElement {
+  const origins = serve.corsOrigins ?? [];
+  const hasWildcard = origins.includes('*');
+  const isBusy = busy === 'set-server-cors:';
+  const save = (next: string[]): void => {
+    void act('set-server-cors', '', { corsOrigins: next });
+  };
+  const addOrigin = (): void => {
+    const v = corsInput.trim();
+    if (!v || origins.includes(v)) { setCorsInput(''); return; }
+    save([...origins, v]);
+    setCorsInput('');
+  };
+  return createElement(
+    'div',
+    { className: 'a2a-auth' },
+    createElement(
+      'div',
+      { className: 'a2a-auth-row' },
+      createElement('span', { className: 'a2a-auth-label' }, '跨域访问 (CORS)'),
+      stateDot(origins.length > 0 ? (hasWildcard ? 'reconnecting' : 'connected') : 'disabled'),
+      createElement(
+        'span',
+        { className: 'a2a-auth-state', 'data-on': String(origins.length > 0) },
+        origins.length === 0
+          ? '未开启(浏览器跨源调用被拒)'
+          : hasWildcard
+            ? '允许任意来源(*)'
+            : `已允许 ${origins.length} 个来源`,
+      ),
+    ),
+    // Current allowlist as removable chips.
+    origins.length > 0
+      ? createElement(
+          'div',
+          { className: 'a2a-cors-list' },
+          ...origins.map((o) =>
+            createElement(
+              'span',
+              { key: o, className: 'a2a-cors-chip' },
+              o,
+              createElement(
+                'button',
+                {
+                  className: 'a2a-cors-chip-x',
+                  title: '移除',
+                  disabled: isBusy,
+                  onClick: () => save(origins.filter((x) => x !== o)),
+                },
+                '×',
+              ),
+            ),
+          ),
+        )
+      : null,
+    createElement(
+      'div',
+      { className: 'a2a-auth-input-row' },
+      createElement('input', {
+        className: 'a2a-input',
+        type: 'text',
+        placeholder: '添加来源,如 http://localhost:8080 或 *',
+        value: corsInput,
+        disabled: isBusy,
+        onChange: (e: { target: { value: string } }) => setCorsInput(e.target.value),
+        onKeyDown: (e: { key: string }) => { if (e.key === 'Enter') addOrigin(); },
+      }),
+      actionBtn('添加', true, addOrigin, isBusy || !corsInput.trim()),
+      origins.length > 0 ? actionBtn('清空', false, () => save([]), isBusy) : null,
+    ),
+    createElement(
+      'div',
+      { className: 'a2a-hint' },
+      hasWildcard
+        ? '⚠️ 已允许任意来源(*):用户浏览器打开的任何网站都能跨源调用本入站端点。仅在完全可信的本机环境使用,并建议同时配置入站鉴权 token。'
+        : '填入完整来源(协议+主机+端口,精确匹配)。留空则默认禁止浏览器跨源调用;写 * 可放开任意来源(不推荐)。跨域配置明文存入 a2a.json,实时生效。',
     ),
   );
 }

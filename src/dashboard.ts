@@ -98,6 +98,8 @@ export interface DashboardControlHooks {
   setServerEnabled?: (enabled: boolean) => Promise<ControlResult>;
   /** Set or clear the inbound server's shared bearer token at runtime (persisted). */
   setServerAuthToken?: (token?: string) => Promise<ControlResult>;
+  /** Replace the inbound CORS origin allowlist at runtime (persisted); empty = no CORS. */
+  setServerCors?: (origins: string[]) => Promise<ControlResult>;
   /** Read current inbound server status (for the serve panel). */
   serverStatus?: () => ControlResult;
   /** Runtime-remove an outbound agent by its connection id. */
@@ -320,6 +322,14 @@ export class DashboardRegistry {
         return this.hooks.setServerAuthToken
           ? this.hooks.setServerAuthToken(token)
           : { ok: false, message: 'set-server-auth is not wired (server mode not mounted)' };
+      }
+      case 'set-server-cors': {
+        // Replace the CORS origin allowlist wholesale; empty array = no CORS.
+        const raw = payload?.corsOrigins;
+        const origins = Array.isArray(raw) ? raw.filter((o): o is string => typeof o === 'string') : [];
+        return this.hooks.setServerCors
+          ? this.hooks.setServerCors(origins)
+          : { ok: false, message: 'set-server-cors is not wired (server mode not mounted)' };
       }
       case 'server-status':
         return this.hooks.serverStatus

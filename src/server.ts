@@ -303,6 +303,17 @@ export class A2AServer {
     return card;
   }
 
+  /**
+   * True when the request carries the configured bearer token. Public wrapper
+   * for transports that must decide response headers/status BEFORE streaming
+   * frames — see index.ts's SSE branch, which must send `content-type:
+   * text/event-stream` + CORS headers before the first `res.write()`, and
+   * therefore needs the auth outcome up front.
+   */
+  checkAuth(req: { headers?: Record<string, string> }): boolean {
+    return this.authorized(req);
+  }
+
   /** True when the request carries the configured bearer token. */
   private authorized(req: { headers?: Record<string, string> }): boolean {
     const token = this.options.authToken;

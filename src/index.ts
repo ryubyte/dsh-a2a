@@ -60,6 +60,22 @@ export interface A2APluginConfig {
   execute?: ServerOptions['execute'];
   /** Optional shared bearer token protecting the inbound /a2a endpoint. */
   authToken?: string;
+  /**
+   * Browser origins allowed to call the inbound A2A routes cross-origin (CORS).
+   * An explicit allowlist of exact origins (scheme+host+port), e.g.
+   * `['http://localhost:8080', 'https://app.example.com']`.
+   *
+   * DEFAULT IS EMPTY = NO CORS: a browser page from another origin cannot call
+   * the endpoint, which is the safe default — with server mode's optional (and
+   * off-by-default) `authToken`, a wildcard would let any site the user visits
+   * drive their local agent. Each request's `Origin` is matched against this
+   * list; a hit echoes that exact origin back (with `Vary: Origin`), a miss
+   * sends no CORS headers. The literal `['*']` opts into a wildcard (logged as
+   * a warning) for fully-trusted local setups. Credentials are never allowed
+   * (auth rides the Bearer header, not cookies). Scoped to the A2A protocol
+   * routes only — the dashboard API (`/a2a/api`) stays loopback/same-origin.
+   */
+  corsOrigins?: string[];
   // dashboard
   /** Serve the dashboard API on the webserver (default true). */
   dashboard?: boolean;
@@ -671,15 +687,37 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
         // keeps routes off until the UI enables the server.
         let enabled = wantsServer;
         let disposers: Array<() => void> = [];
+        // Mutable CORS allowlist, read per-request so a UI change takes effect
+        // live (like authToken) without rebuilding routes. Normalized to unique,
+        // trimmed, non-empty entries. Empty = no CORS (safe default).
+        let corsAllowlist: string[] = normalizeOrigins(mergedConfig.corsOrigins);
+        if (corsAllowlist.includes('*')) {
+          logger?.warn?.(
+            '[a2a] corsOrigins includes "*": the inbound A2A endpoint accepts cross-origin browser calls from ANY site. ' +
+              'Set an explicit origin allowlist unless this host is fully trusted and, ideally, gate it with authToken.',
+          );
+        }
 
         const registerRoutes = (): void => {
+          // CORS for the A2A protocol routes so allowlisted browser clients
+          // (Flutter Web, plain fetch()) can call cross-origin. Resolved
+          // per-request against `corsAllowlist` (read live so a UI change lands
+          // without a route rebuild); empty allowlist = no CORS. Scoped to these
+          // routes only — /a2a/api stays loopback-fenced.
+          const cors = (req: IncomingMessage): Record<string, string> =>
+            corsHeadersFor(req.headers.origin, corsAllowlist);
           // AgentCard discovery route.
           disposers.push(
             webServer.register({
               kind: 'exact',
               path: '/.well-known/agent-card.json',
-              handler: async (_req: IncomingMessage, res: ServerResponse) => {
-                res.writeHead(200, { 'content-type': 'application/json' });
+              handler: async (req: IncomingMessage, res: ServerResponse) => {
+                if (req.method === 'OPTIONS') {
+                  res.writeHead(204, cors(req));
+                  res.end();
+                  return;
+                }
+                res.writeHead(200, { 'content-type': 'application/json', ...cors(req) });
                 res.end(JSON.stringify(server.card));
               },
             }),
@@ -690,30 +728,49 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
               kind: 'prefix',
               path: server.endpointPath,
               handler: async (req: IncomingMessage, res: ServerResponse) => {
+                const ch = cors(req);
+                // Answer the CORS preflight before any routing — a browser sends
+                // OPTIONS first and refuses the real request without these headers.
+                if (req.method === 'OPTIONS') {
+                  res.writeHead(204, ch);
+                  res.end();
+                  return;
+                }
                 const isStream = (req.headers.accept ?? '').includes('text/event-stream');
                 if (req.method === 'GET' && (req.url ?? '').startsWith(server.endpointPath + '/card')) {
-                  res.writeHead(200, { 'content-type': 'application/json' });
+                  res.writeHead(200, { 'content-type': 'application/json', ...ch });
                   res.end(JSON.stringify(server.card));
                   return;
                 }
                 if (req.method !== 'POST') {
-                  res.writeHead(405, { 'content-type': 'text/plain' });
+                  res.writeHead(405, { 'content-type': 'text/plain', ...ch });
                   res.end('Method Not Allowed');
                   return;
                 }
                 const body = await readBody(req);
                 if (isStream) {
-                  const stream = await server.handleStream(toServerReq(req), body, (frame) => res.write(frame));
-                  if (stream.status !== 200) {
-                    res.writeHead(stream.status, { 'content-type': 'text/plain', ...(stream.headers ?? {}) });
+                  // Auth must be decided BEFORE the first frame: the SSE success
+                  // path writes frames via the onEvent callback, and the first
+                  // res.write() implicitly flushes headers — so we cannot set
+                  // text/event-stream + CORS afterward. Gate here, write the
+                  // stream headers up front, then stream.
+                  if (!server.checkAuth(toServerReq(req))) {
+                    res.writeHead(401, { 'content-type': 'text/plain', ...ch, 'WWW-Authenticate': 'Bearer' });
                     res.end('Unauthorized');
                     return;
                   }
+                  res.writeHead(200, {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                    ...ch,
+                  });
+                  await server.handleStream(toServerReq(req), body, (frame) => res.write(frame));
                   res.end();
                   return;
                 }
                 const out = await server.handle(toServerReq(req), body);
-                res.writeHead(out.status, { 'content-type': out.contentType, ...(out.headers ?? {}) });
+                res.writeHead(out.status, { 'content-type': out.contentType, ...ch, ...(out.headers ?? {}) });
                 res.end(out.body);
               },
             }),
@@ -830,9 +887,34 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
             logger?.info?.(`[a2a] inbound authToken ${token ? 'set' : 'cleared'} (saved to ${res.path})`);
             return { ok: true, message: token ? '已设置入站鉴权 token' : '已清除入站鉴权 token' };
           },
+          setServerCors: async (origins) => {
+            // Replace the allowlist wholesale; read live by the route handlers,
+            // so this takes effect on the next request without a route rebuild.
+            corsAllowlist = normalizeOrigins(origins);
+            if (corsAllowlist.includes('*')) {
+              logger?.warn?.(
+                '[a2a] corsOrigins set to include "*": the inbound A2A endpoint now accepts cross-origin browser calls from ANY site.',
+              );
+            }
+            const next: PersistedA2AConfig = loadPersistedA2A();
+            next.server = {
+              ...(next.server ?? {}),
+              corsOrigins: corsAllowlist.length > 0 ? corsAllowlist : undefined,
+            };
+            const res = savePersistedA2A(next);
+            if (!res.ok) {
+              logger?.error?.(`[a2a] failed to persist corsOrigins to ${res.path}: ${res.message}`);
+              return { ok: false, message: `applied in-memory but failed to save: ${res.message}` };
+            }
+            logger?.info?.(`[a2a] inbound CORS allowlist updated (${corsAllowlist.length} origin(s), saved to ${res.path})`);
+            return {
+              ok: true,
+              message: corsAllowlist.length > 0 ? `已更新跨域白名单 (${corsAllowlist.length} 个来源)` : '已清空跨域白名单(默认禁止跨源)',
+            };
+          },
           serverStatus: () => ({
             ok: true,
-            message: JSON.stringify({ enabled, ...serverCard() }),
+            message: JSON.stringify({ enabled, ...serverCard(), corsOrigins: corsAllowlist }),
           }),
         });
 
@@ -1006,6 +1088,47 @@ async function readBody(req: IncomingMessage): Promise<string> {
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.once('error', reject);
   });
+}
+
+/** Normalize a CORS origin allowlist: trim, drop empties, de-duplicate. */
+function normalizeOrigins(origins: readonly string[] | undefined): string[] {
+  if (!origins) return [];
+  const seen = new Set<string>();
+  for (const o of origins) {
+    const t = typeof o === 'string' ? o.trim() : '';
+    if (t) seen.add(t);
+  }
+  return [...seen];
+}
+
+/**
+ * Resolve CORS headers for one inbound A2A request against the configured
+ * origin allowlist. Returns `{}` (no CORS) when the request has no `Origin`,
+ * the allowlist is empty, or the origin isn't allowed — so a disallowed
+ * cross-origin browser call is blocked by the browser exactly as before this
+ * feature existed. An allowed origin is echoed back verbatim (never `*` unless
+ * the operator explicitly configured `['*']`), with `Vary: Origin` so shared
+ * caches don't leak one origin's response to another. Credentials are never
+ * allowed: inbound auth is a Bearer header, not a cookie.
+ */
+function corsHeadersFor(reqOrigin: string | undefined, allowed: readonly string[]): Record<string, string> {
+  if (allowed.length === 0) return {};
+  const wildcard = allowed.includes('*');
+  // `*` echoes the caller's origin when present (so the value is still concrete
+  // and future credentialed use stays possible), else the literal `*`.
+  let allowOrigin: string | undefined;
+  if (wildcard) allowOrigin = reqOrigin ?? '*';
+  else if (reqOrigin && allowed.includes(reqOrigin)) allowOrigin = reqOrigin;
+  if (!allowOrigin) return {};
+  const headers: Record<string, string> = {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400',
+  };
+  // Vary on Origin whenever the value is request-dependent (i.e. not a static `*`).
+  if (allowOrigin !== '*') headers['Vary'] = 'Origin';
+  return headers;
 }
 
 /** Loopback/same-origin trust fence for the dashboard API (no remote write). */
