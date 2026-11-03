@@ -13,6 +13,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  compatibility:
+    uses: ./.github/workflows/dsh-compat.yml
+
   ci:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -38,6 +41,3 @@ jobs:
 
       - name: Test
         run: pnpm test
-
-      - name: Build
-        run: pnpm build

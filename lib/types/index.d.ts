@@ -77,9 +77,12 @@ export type { DashboardSnapshot, InboundPeer, OutboundAgent, ControlResult, } fr
  */
 export interface WebServerService {
     /** The OS-assigned (or configured) listen port. */
-    readonly port: number;
-    /** The configured bind host literal ('127.0.0.1' | '0.0.0.0'). */
+    readonly port: number | undefined;
+    /** The configured bind address. Older hosts also allow '0.0.0.0'. */
     readonly host: string;
+    /** Added by DSH 0.2.1: preserve TLS and canonical IPv6/mapped addresses. */
+    getOrigin?(): string;
+    readonly protocol?: 'http:' | 'https:';
     register(route: {
         kind: 'exact' | 'prefix';
         path: string;
@@ -154,9 +157,12 @@ export declare function apply(ctx: Context, config?: A2APluginConfig): void;
  * back to loopback when no such address exists. IPv6 link-local is skipped
  * (not reachable without a scope id).
  *
- * @param host - the web server's configured bind host ('127.0.0.1' | '0.0.0.0').
+ * @param host - the web server's configured bind address.
  * @param port - the OS-assigned (or configured) listen port.
+ * @param protocol - the host listener's protocol (older hosts default to HTTP).
  * @returns a scheme+host+port URL for Agents to call back into this DSH.
  */
-export declare function inferBaseUrl(host: string, port: number): string;
+export declare function inferBaseUrl(host: string, port: number, protocol?: 'http:' | 'https:'): string;
+/** Prefer the host's authoritative origin; retain inference for older DSH. */
+export declare function webServerBaseUrl(webServer: WebServerService): string;
 //# sourceMappingURL=index.d.ts.map

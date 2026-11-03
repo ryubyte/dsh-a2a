@@ -36,7 +36,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  compatibility:
+    uses: ./.github/workflows/dsh-compat.yml
+
   publish:
+    needs: compatibility
     name: build · verify · publish
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -76,9 +80,6 @@ jobs:
 
       - name: Test
         run: pnpm test
-
-      - name: Build
-        run: pnpm build
 
       - name: Dry-run publish (validation only)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true'

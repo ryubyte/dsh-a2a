@@ -9,6 +9,8 @@ It turns a DSH instance into a full A2A peer in both directions:
 - **Client mode (outbound)** — discover a remote agent via its **AgentCard**, map each **skill** to a DSH model tool (`a2a__<name>__<skill>`), and execute remote tasks through A2A **JSON-RPC**.
 - **Server mode (inbound)** — expose this DSH to other agents: `/.well-known/agent-card.json` plus a JSON-RPC endpoint (`SendMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SendStreamingMessage` over SSE) on the DSH webserver.
 
+Supports DSH `0.1.7-rc.2`, `0.2.0-rc.1–2`, `0.2.1-alpha.1–5`, and `0.2.1-rc.1–5` (13 versions), checked individually in CI and before release. [Compatibility details](docs/dsh-compat.md).
+
 ## Installation
 
 Install into a profile with one command and restart:
