@@ -66,15 +66,16 @@ test('real DSH WebServer serves the built-in A2A routes and removes them on unlo
     assert.equal(response.status, 200);
     const card = await response.json();
     assert.equal(card.supportedInterfaces[0].url, `${origin}/a2a`);
-    const dashboardStatus = (requestOrigin: string) => new Promise<number | undefined>((resolve, reject) => {
+    const dashboardStatus = (requestOrigin: string, requestHost = '[::1]:3080') => new Promise<number | undefined>((resolve, reject) => {
       // Use node:http so the explicit IPv6 Host header is sent unchanged.
-      get(`${origin}/a2a/api`, { headers: { host: '[::1]:3080', origin: requestOrigin } }, (res) => {
+      get(`${origin}/a2a/api`, { headers: { host: requestHost, origin: requestOrigin } }, (res) => {
         res.resume();
         res.on('end', () => resolve(res.statusCode));
       }).on('error', reject);
     });
     assert.equal(await dashboardStatus('http://[::1]:3080'), 200, 'IPv6 loopback can access its dashboard');
     assert.equal(await dashboardStatus('https://untrusted.example'), 403);
+    assert.equal(await dashboardStatus('', 'untrusted@localhost'), 403);
     const rpc = await fetch(`${origin}/a2a`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'SendMessage', params: {

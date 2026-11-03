@@ -1149,7 +1149,9 @@ function trustedLoopback(req: IncomingMessage): boolean {
   if (!host) return false;
   let hostname: string;
   try {
-    hostname = new URL(`http://${host}`).hostname;
+    const authority = new URL(`http://${host}`);
+    if (authority.username || authority.password || authority.pathname !== '/' || authority.search || authority.hash) return false;
+    hostname = authority.hostname;
   } catch {
     return false;
   }
