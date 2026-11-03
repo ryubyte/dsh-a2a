@@ -9,6 +9,8 @@
 - **Client 模式（出站）**——通过远程 Agent 的 **AgentCard** 发现它，把每个 **skill** 映射为 DSH 模型工具（`a2a__<name>__<skill>`），通过 A2A **JSON-RPC** 执行远程任务。
 - **Server 模式（入站）**——把本 DSH 暴露给其他 Agent：在 DSH webserver 上提供 `/.well-known/agent-card.json` 与 JSON-RPC 端点（`SendMessage`、`GetTask`、`ListTasks`、`CancelTask`、基于 SSE 的 `SendStreamingMessage`）。
 
+兼容 DSH `0.1.7-rc.2`、`0.2.0-rc.1～2`、`0.2.1-alpha.1～5` 与 `0.2.1-rc.1～5`，共 13 个版本；CI 和发布流程逐版本验证。[兼容性说明](docs/dsh-compat.md)。
+
 ## 安装
 
 一行命令装进 profile，重启即生效：

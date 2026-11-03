@@ -104,9 +104,12 @@ export type {
  */
 export interface WebServerService {
   /** The OS-assigned (or configured) listen port. */
-  readonly port: number;
-  /** The configured bind host literal ('127.0.0.1' | '0.0.0.0'). */
+  readonly port: number | undefined;
+  /** The configured bind address. Older hosts also allow '0.0.0.0'. */
   readonly host: string;
+  /** Added by DSH 0.2.1: preserve TLS and canonical IPv6/mapped addresses. */
+  getOrigin?(): string;
+  readonly protocol?: 'http:' | 'https:';
   register(route: {
     kind: 'exact' | 'prefix';
     path: string;
@@ -570,7 +573,7 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
         // Derive the advertised base URL from the real listen address when the
         // config doesn't pin one; avoids advertising a stale port. When bound
         // to 0.0.0.0, advertise a reachable LAN address, not loopback.
-        const baseUrl = mergedConfig.baseUrl ?? inferBaseUrl(webServer.host, webServer.port);
+        const baseUrl = mergedConfig.baseUrl ?? webServerBaseUrl(webServer);
         const endpointPath = mergedConfig.endpointPath ?? DEFAULT_ENDPOINT;
         // Surface a stale pinned baseUrl: if the config pins a port that does
         // not match the real listen port, the advertised AgentCard URL is
@@ -845,7 +848,7 @@ export function apply(ctx: Context, config: A2APluginConfig = {}) {
             const { endpointChanged } = server.updateCard(cardPatch);
             if (clearBaseUrl) {
               // Re-derive from the actual listen address and re-advertise.
-              server.setBaseUrl(inferBaseUrl(webServer.host, webServer.port));
+              server.setBaseUrl(webServerBaseUrl(webServer));
             }
             // The JSON-RPC path moved: re-register on the new path, but only
             // while serving (disabled → routes get the new path on next enable).
@@ -1033,16 +1036,25 @@ function inboundSessionCwd(configPath: string): string {
  * back to loopback when no such address exists. IPv6 link-local is skipped
  * (not reachable without a scope id).
  *
- * @param host - the web server's configured bind host ('127.0.0.1' | '0.0.0.0').
+ * @param host - the web server's configured bind address.
  * @param port - the OS-assigned (or configured) listen port.
+ * @param protocol - the host listener's protocol (older hosts default to HTTP).
  * @returns a scheme+host+port URL for Agents to call back into this DSH.
  */
-export function inferBaseUrl(host: string, port: number): string {
+export function inferBaseUrl(host: string, port: number, protocol: 'http:' | 'https:' = 'http:'): string {
   const hostname =
     host === '0.0.0.0'
       ? primaryLanAddress() ?? '127.0.0.1'
       : host || '127.0.0.1';
-  return `http://${hostname}:${port}`;
+  const urlHost = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname;
+  return `${protocol}//${urlHost}:${port}`;
+}
+
+/** Prefer the host's authoritative origin; retain inference for older DSH. */
+export function webServerBaseUrl(webServer: WebServerService): string {
+  if (typeof webServer.getOrigin === 'function') return webServer.getOrigin();
+  if (webServer.port === undefined) throw new Error('a2a: webServer has not bound a port');
+  return inferBaseUrl(webServer.host, webServer.port, webServer.protocol);
 }
 
 /**
@@ -1135,8 +1147,13 @@ function corsHeadersFor(reqOrigin: string | undefined, allowed: readonly string[
 function trustedLoopback(req: IncomingMessage): boolean {
   const host = req.headers.host;
   if (!host) return false;
-  const hostname = host.split(':')[0];
-  if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '::1') return false;
+  let hostname: string;
+  try {
+    hostname = new URL(`http://${host}`).hostname;
+  } catch {
+    return false;
+  }
+  if (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '[::1]') return false;
   if (req.headers['sec-fetch-site'] === 'cross-site') return false;
   const origin = req.headers.origin;
   if (!origin) return true;

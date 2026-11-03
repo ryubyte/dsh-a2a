@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { SlotCore } from '@deepseek-ai/dsh-client-ui-slots';
 
 const require = createRequire(import.meta.url);
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -36,6 +37,12 @@ globalThis.window = {
       let count = 0;
       let savedOptions;
       let savedComponent;
+      // Exercise the installed DSH registry, including its runtime validations.
+      const core = new SlotCore();
+      const releaseRoot = core.register({
+        name: 'root',
+        children: { 'settings.section': { kind: 'list', scope: 'root' } },
+      }, () => null);
       const ctx = {
         effect(fn) {
           const disposer = fn();
@@ -49,10 +56,11 @@ globalThis.window = {
             return cb();
           },
           register(options, component) {
+            const dispose = core.register(options, component);
             count += 1;
             savedOptions = options;
             savedComponent = component;
-            return () => { count = 0; };
+            return () => { dispose(); count = 0; };
           },
         },
       };
@@ -64,6 +72,9 @@ globalThis.window = {
       check('slot name = settings.section', savedOptions?.name === 'settings.section');
       check('slot label resolves', typeof savedOptions?.label?.() === 'string' && savedOptions.label().length > 0);
       check('component is a function', typeof savedComponent === 'function');
+      check('real DSH SlotCore contains the A2A section', core.entriesOfSlot('settings.section').length === 1);
+      releaseRoot();
+      check('real DSH SlotCore clears the section on owner unload', core.entriesOfSlot('settings.section').length === 0);
     },
   },
 };

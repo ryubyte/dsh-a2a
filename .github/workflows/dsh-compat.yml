@@ -1,0 +1,48 @@
+name: DSH compatibility
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.versions.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: versions
+        run: echo "matrix=$(node -p "JSON.stringify(require('./scripts/dsh-versions.json'))")" >> "$GITHUB_OUTPUT"
+
+  compatibility:
+    needs: versions
+    name: DSH ${{ matrix.dsh }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        dsh: ${{ fromJSON(needs.versions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Select exact DSH dependencies
+        run: node scripts/select-dsh-version.mjs "$DSH_VERSION"
+        env:
+          DSH_VERSION: ${{ matrix.dsh }}
+      # Deliberately resolve a different host tree, preserving the baseline's
+      # other locked versions. Normal CI/release still use frozen installs.
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm peers check
+      - run: pnpm typecheck
+      - run: pnpm test
+        env:
+          DSH_VERSION: ${{ matrix.dsh }}
