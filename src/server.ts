@@ -18,6 +18,7 @@ import type {
   JsonRpcError,
   JsonRpcRequest,
   Message,
+  SendMessageConfiguration,
   Part,
   StreamResponse,
   Task,
@@ -512,11 +513,11 @@ export class A2AServer {
         if (!msg?.parts?.length) throw { code: A2A_ERROR_CODES.INVALID_PARAMS, message: 'Missing message' };
         const taskId = await this.ensureTask(params as { message?: Message });
         const task = this.store.get(taskId!)!;
-        // Run synchronously (returnImmediately=false default) — execute inline,
-        // but don't block forever: the executor contract returns a Message.
+        // Start execution in the background; synchronous callers wait below.
         this.runTask(task.id, task.contextId!, msg);
-        // For a stateless-style SendMessage, wait for completion.
-        await this.waitTerminal(task.id);
+        // Honor asynchronous callers while the task continues in the background.
+        const configuration = params.configuration as SendMessageConfiguration | undefined;
+        if (!configuration?.returnImmediately) await this.waitTerminal(task.id);
         return { task: this.store.get(task.id) };
       }
       case A2A_METHODS.getTask: {
@@ -926,7 +927,7 @@ export function createDshAgentExecutor(
     try {
       handle = await agents.create(createOptions);
     } catch (err) {
-      if (/already (has|owns)|persisted/i.test((err as Error).message)) {
+      if (/already (has|owns|exists)|persisted/i.test((err as Error).message)) {
         handle = await agents.resume({ resumeSessionId: sessionId, ...withModel, ...(setup ? { setup } : {}) });
       } else {
         throw err;

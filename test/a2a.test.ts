@@ -760,3 +760,53 @@ test('outbound tool reuses one contextId per local agent (cross-call memory), is
   await def.execute?.({ prompt: 'ctx-e' }, {});
   assert.equal(ctxOf('ctx-d'), ctxOf('ctx-e'), 'agentless calls share one stable fallback context');
 });
+
+
+test('SendMessage returnImmediately acknowledges before executor completion', async (t) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const server = new A2AServer({
+    baseUrl: 'http://127.0.0.1:3080', agentName: 'Async regression', agentDescription: 'Regression test', agentVersion: '1.0.0',
+    execute: async () => { await gate; return { messageId: 'reply', role: 'ROLE_AGENT', parts: [{ text: 'finished' }] }; },
+  });
+  const safety = setTimeout(release, 3000);
+  t.after(() => clearTimeout(safety));
+  const send = (messageId: string, returnImmediately: boolean) => server.handle(
+    { method: 'POST', url: '/a2a' },
+    JSON.stringify({ jsonrpc: '2.0', id: messageId, method: 'SendMessage', params: {
+      message: { messageId, role: 'ROLE_USER', parts: [{ text: 'test' }] }, configuration: { returnImmediately },
+    } }),
+  );
+  const ack = JSON.parse((await send('async-regression', true)).body).result.task;
+  assert.equal(ack.status.state, TaskState.WORKING);
+  let blockingSettled = false;
+  const blocking = send('blocking-regression', false).then((value) => { blockingSettled = true; return value; });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(blockingSettled, false);
+  release();
+  const finished = JSON.parse((await blocking).body).result.task;
+  assert.equal(finished.status.state, TaskState.COMPLETED);
+  assert.equal(finished.artifacts[0].parts[0].text, 'finished');
+  const polled = await server.handle({ method: 'POST', url: '/a2a' }, JSON.stringify({ jsonrpc: '2.0', id: 'poll', method: 'GetTask', params: { id: ack.id } }));
+  assert.equal(JSON.parse(polled.body).result.status.state, TaskState.COMPLETED);
+});
+
+test('dshAgentExecutor resumes when create reports already exists after reconstruction', async () => {
+  const { agents, calls, logs } = makeFakeAgents();
+  const originalCreate = agents.create.bind(agents);
+  agents.create = async (options) => {
+    if (logs.has(options.sessionId)) throw new Error(`session "${options.sessionId}" already exists`);
+    return originalCreate(options);
+  };
+  const request = { message: { messageId: 'resume-regression', role: 'ROLE_USER' as const, parts: [{ text: 'first' }] }, taskId: 'task', contextId: 'stable-context', signal: new AbortController().signal };
+  const first = createDshAgentExecutor(agents, { cwd: '/tmp/ws' });
+  await first(request);
+  await first.disposeAll();
+  const restarted = createDshAgentExecutor(agents, { cwd: '/tmp/ws' });
+  const reply = await restarted({ ...request, message: { ...request.message, parts: [{ text: 'second' }] } });
+  assert.equal(partText(reply), 'echo: second');
+  assert.equal(calls.resume.length, 1);
+  assert.equal(calls.resume[0].sessionId, 'a2a-stable-context');
+  assert.equal(logs.get('a2a-stable-context')!.length, 4);
+  await restarted.disposeAll();
+});
